@@ -1,13 +1,18 @@
 //! Interactive 2D board canvas.
 
-use crate::app::PbcCam;
+use eframe::egui::{
+    Align2, Color32, CornerRadius, CursorIcon, FontId, Painter, Pos2, Rect, Response, Sense, Shape,
+    Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
+};
+use pbc_cam_core::{
+    Aperture, ApertureHole, ApertureShape, Bounds, ExcellonLayer, GerberLayer, Layer,
+    LayerGeometry, Polarity, Primitive,
+};
+
+use crate::app::{PbcCam, Selection};
 use crate::theme;
 use crate::ui::widgets;
 use crate::view::{self, ViewState};
-use eframe::egui::{
-    Align2, Color32, CornerRadius, CursorIcon, FontId, Painter, Pos2, Rect, Response, Sense,
-    Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
-};
 
 /// Draw the central canvas and handle its camera controls.
 pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
@@ -16,6 +21,15 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
     let rect = response.rect;
     if rect.width() < 2.0 || rect.height() < 2.0 {
         return;
+    }
+
+    if app.fit_requested {
+        app.fit_requested = false;
+        if let Some(bounds) = app.project().bounds(true) {
+            app.view.fit_bounds(bounds, rect, 44.0);
+        } else {
+            app.view.reset();
+        }
     }
 
     let painter = ui.painter_at(rect);
@@ -30,8 +44,36 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         draw_axes(&painter, rect, &app.view);
     }
 
-    let empty_card = if app.project.is_empty() {
+    let selected_layer = match app.selection {
+        Some(Selection::Layer(id)) => Some(id),
+        _ => None,
+    };
+    let visible_layers: Vec<&Layer> = app
+        .project()
+        .layers()
+        .iter()
+        .filter(|layer| layer.visible())
+        .collect();
+
+    for layer in visible_layers
+        .iter()
+        .copied()
+        .filter(|layer| Some(layer.id()) != selected_layer)
+    {
+        draw_layer(&painter, rect, &app.view, layer, false);
+    }
+    if let Some(layer) = visible_layers
+        .iter()
+        .copied()
+        .find(|layer| Some(layer.id()) == selected_layer)
+    {
+        draw_layer(&painter, rect, &app.view, layer, true);
+    }
+
+    let empty_card = if app.project().is_empty() {
         Some(draw_empty_state(&painter, rect))
+    } else if visible_layers.is_empty() {
+        Some(draw_hidden_state(&painter, rect))
     } else {
         None
     };
@@ -51,7 +93,7 @@ fn handle_input(ui: &Ui, app: &mut PbcCam, response: &Response, rect: Rect) {
     }
 
     if response.double_clicked() {
-        app.reset_view();
+        app.fit_view();
     }
 
     if response.hovered()
@@ -84,6 +126,229 @@ fn handle_input(ui: &Ui, app: &mut PbcCam, response: &Response, rect: Rect) {
             .hover_pos()
             .map(|pointer| app.view.screen_to_world(pointer, rect)),
     );
+}
+
+fn draw_layer(painter: &Painter, rect: Rect, view: &ViewState, layer: &Layer, selected: bool) {
+    let [r, g, b] = layer.color();
+    let color = if selected {
+        Color32::from_rgb(r, g, b)
+    } else {
+        Color32::from_rgba_unmultiplied(r, g, b, 220)
+    };
+    match layer.geometry() {
+        LayerGeometry::Gerber(gerber) => {
+            draw_gerber(painter, rect, view, gerber, color);
+        }
+        LayerGeometry::Excellon(excellon) => {
+            draw_excellon(painter, rect, view, excellon, color);
+        }
+    }
+}
+
+fn draw_gerber(
+    painter: &Painter,
+    rect: Rect,
+    view: &ViewState,
+    gerber: &GerberLayer,
+    color: Color32,
+) {
+    for primitive in &gerber.primitives {
+        let Some(bounds) = primitive.bounds() else {
+            continue;
+        };
+        if !bounds_visible(bounds, view, rect) {
+            continue;
+        }
+        let primitive_color = match primitive {
+            Primitive::Stroke { polarity, .. }
+            | Primitive::Flash { polarity, .. }
+            | Primitive::Region { polarity, .. } => {
+                if *polarity == Polarity::Clear {
+                    theme::CANVAS
+                } else {
+                    color
+                }
+            }
+        };
+
+        match primitive {
+            Primitive::Stroke { path, aperture, .. } => {
+                let mut points: Vec<Pos2> = path
+                    .points
+                    .iter()
+                    .map(|point| view.world_to_screen(pos2(point.x as f32, point.y as f32), rect))
+                    .collect();
+                if path.closed
+                    && let Some(first) = points.first().copied()
+                {
+                    points.push(first);
+                }
+                if points.len() < 2 {
+                    continue;
+                }
+                let width = (aperture_stroke_width(aperture) * view.zoom()).max(0.8);
+                painter.add(Shape::line(
+                    points,
+                    Stroke::new(width.min(80.0), primitive_color),
+                ));
+            }
+            Primitive::Flash {
+                position,
+                aperture,
+                rotation_degrees,
+                ..
+            } => {
+                draw_flash(
+                    painter,
+                    rect,
+                    view,
+                    *position,
+                    aperture,
+                    *rotation_degrees,
+                    primitive_color,
+                );
+            }
+            Primitive::Region { contours, .. } => {
+                for contour in contours {
+                    let points: Vec<Pos2> = contour
+                        .points
+                        .iter()
+                        .map(|point| {
+                            view.world_to_screen(pos2(point.x as f32, point.y as f32), rect)
+                        })
+                        .collect();
+                    if points.len() >= 3 {
+                        painter.add(Shape::convex_polygon(points, primitive_color, Stroke::NONE));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn draw_flash(
+    painter: &Painter,
+    rect: Rect,
+    view: &ViewState,
+    position: pbc_cam_core::Point,
+    aperture: &Aperture,
+    rotation_degrees: f64,
+    color: Color32,
+) {
+    let center = view.world_to_screen(pos2(position.x as f32, position.y as f32), rect);
+    if !rect.expand(100.0).contains(center) {
+        return;
+    }
+    match aperture.shape {
+        ApertureShape::Circle { diameter } => {
+            let radius = (diameter as f32 * 0.5 * view.zoom()).max(0.7);
+            painter.circle_filled(center, radius, color);
+            draw_hole(painter, center, aperture.hole.as_ref(), view, radius);
+        }
+        ApertureShape::Rectangle { .. }
+        | ApertureShape::Obround { .. }
+        | ApertureShape::Polygon { .. } => {
+            let world_points = aperture.outline(position, rotation_degrees);
+            let points: Vec<Pos2> = world_points
+                .iter()
+                .map(|point| view.world_to_screen(pos2(point.x as f32, point.y as f32), rect))
+                .collect();
+            if points.len() >= 3 {
+                painter.add(Shape::convex_polygon(points, color, Stroke::NONE));
+            }
+            draw_rectangular_hole(painter, center, aperture.hole.as_ref(), view);
+        }
+    }
+}
+
+fn draw_hole(
+    painter: &Painter,
+    center: Pos2,
+    hole: Option<&ApertureHole>,
+    view: &ViewState,
+    outer_radius: f32,
+) {
+    match hole {
+        Some(ApertureHole::Circle { diameter }) => {
+            let radius = (*diameter as f32 * 0.5 * view.zoom()).max(0.4);
+            painter.circle_filled(center, radius.min(outer_radius), theme::CANVAS);
+        }
+        Some(ApertureHole::Rectangle { width, height }) => {
+            let size = vec2(
+                (*width as f32 * view.zoom()).max(0.8),
+                (*height as f32 * view.zoom()).max(0.8),
+            );
+            painter.rect_filled(
+                Rect::from_center_size(center, size),
+                CornerRadius::ZERO,
+                theme::CANVAS,
+            );
+        }
+        None => {}
+    }
+}
+
+fn draw_rectangular_hole(
+    painter: &Painter,
+    center: Pos2,
+    hole: Option<&ApertureHole>,
+    view: &ViewState,
+) {
+    if let Some(ApertureHole::Circle { diameter }) = hole {
+        let radius = (*diameter as f32 * 0.5 * view.zoom()).max(0.4);
+        painter.circle_filled(center, radius, theme::CANVAS);
+    }
+}
+
+fn draw_excellon(
+    painter: &Painter,
+    rect: Rect,
+    view: &ViewState,
+    excellon: &ExcellonLayer,
+    color: Color32,
+) {
+    for hole in &excellon.holes {
+        let center =
+            view.world_to_screen(pos2(hole.position.x as f32, hole.position.y as f32), rect);
+        if !rect.expand(20.0).contains(center) {
+            continue;
+        }
+        let radius = (hole.diameter_mm as f32 * 0.5 * view.zoom()).max(1.2);
+        painter.circle_filled(center, radius, color);
+        if radius > 2.2 {
+            painter.circle_filled(center, radius - 1.3, theme::CANVAS);
+        }
+    }
+
+    for slot in &excellon.slots {
+        let start = view.world_to_screen(pos2(slot.start.x as f32, slot.start.y as f32), rect);
+        let end = view.world_to_screen(pos2(slot.end.x as f32, slot.end.y as f32), rect);
+        if !rect.expand(20.0).contains(start) && !rect.expand(20.0).contains(end) {
+            continue;
+        }
+        let width = (slot.diameter_mm as f32 * view.zoom()).max(1.4);
+        painter.line_segment([start, end], Stroke::new(width, color));
+        if width > 3.0 {
+            painter.line_segment([start, end], Stroke::new(width - 2.0, theme::CANVAS));
+        }
+    }
+}
+
+fn aperture_stroke_width(aperture: &Aperture) -> f32 {
+    match aperture.shape {
+        ApertureShape::Circle { diameter } => diameter as f32,
+        ApertureShape::Rectangle { width, height } | ApertureShape::Obround { width, height } => {
+            width.min(height) as f32
+        }
+        ApertureShape::Polygon { diameter, .. } => diameter as f32,
+    }
+    .max(0.01)
+}
+
+fn bounds_visible(bounds: Bounds, view: &ViewState, rect: Rect) -> bool {
+    let min = view.world_to_screen(pos2(bounds.min.x as f32, bounds.max.y as f32), rect);
+    let max = view.world_to_screen(pos2(bounds.max.x as f32, bounds.min.y as f32), rect);
+    Rect::from_min_max(min, max).intersects(rect.expand(2.0))
 }
 
 fn draw_grid(painter: &Painter, rect: Rect, view: &ViewState) {
@@ -174,6 +439,35 @@ fn draw_axes(painter: &Painter, rect: Rect, view: &ViewState) {
 }
 
 fn draw_empty_state(painter: &Painter, rect: Rect) -> Rect {
+    draw_message_card(
+        painter,
+        rect,
+        "No fabrication data",
+        "Import Gerber copper, outline or silkscreen layers",
+        "and an Excellon drill file to start the job.",
+        "PBC-CAM  /  GERBER + EXCELLON  >  CNC",
+    )
+}
+
+fn draw_hidden_state(painter: &Painter, rect: Rect) -> Rect {
+    draw_message_card(
+        painter,
+        rect,
+        "All layers are hidden",
+        "Use the eye checkboxes in the browser",
+        "to make a source layer visible again.",
+        "PBC-CAM  /  LAYER VISIBILITY",
+    )
+}
+
+fn draw_message_card(
+    painter: &Painter,
+    rect: Rect,
+    title: &str,
+    line_one: &str,
+    line_two: &str,
+    footer: &str,
+) -> Rect {
     let width = (rect.width() - 48.0).clamp(280.0, 460.0);
     let height = 216.0;
     let card = Rect::from_center_size(rect.center() + vec2(0.0, -4.0), vec2(width, height));
@@ -203,21 +497,21 @@ fn draw_empty_state(painter: &Painter, rect: Rect) -> Rect {
     painter.text(
         pos2(card.center().x, card.top() + 98.0),
         Align2::CENTER_CENTER,
-        "No layers loaded",
+        title,
         FontId::proportional(19.0),
         theme::TEXT,
     );
     painter.text(
         pos2(card.center().x, card.top() + 125.0),
         Align2::CENTER_CENTER,
-        "Gerber and Excellon import is coming next.",
+        line_one,
         FontId::proportional(12.0),
         theme::TEXT_MUTED,
     );
     painter.text(
         pos2(card.center().x, card.top() + 144.0),
         Align2::CENTER_CENTER,
-        "The canvas and project model are ready.",
+        line_two,
         FontId::proportional(12.0),
         theme::TEXT_FAINT,
     );
@@ -233,7 +527,7 @@ fn draw_empty_state(painter: &Painter, rect: Rect) -> Rect {
     painter.text(
         pos2(card.center().x, card.bottom() - 18.0),
         Align2::CENTER_CENTER,
-        "PBC-CAM  /  PCB FABRICATION WORKBENCH",
+        footer,
         FontId::proportional(9.0),
         theme::TEXT_FAINT,
     );
@@ -253,11 +547,18 @@ fn draw_overlays(painter: &Painter, rect: Rect, app: &PbcCam) {
             "GRID {}",
             view::format_length(
                 view::grid_step_mm(app.view.zoom()) as f32,
-                app.project.units(),
+                app.project().units(),
             )
         );
         chip(painter, pos2(x, y), &grid_label);
     }
+
+    let jobs = format!(
+        "{} LAYERS  /  {} OBJECTS",
+        app.project().visible_layer_count(),
+        app.project().object_count()
+    );
+    chip_right(painter, rect, &jobs);
 
     draw_scale_bar(painter, rect, app);
 }
@@ -282,6 +583,26 @@ fn chip(painter: &Painter, anchor: Pos2, text: &str) -> Rect {
     rect
 }
 
+fn chip_right(painter: &Painter, rect: Rect, text: &str) {
+    let galley =
+        painter.layout_no_wrap(text.to_owned(), FontId::monospace(10.0), theme::TEXT_MUTED);
+    let width = galley.size().x + 16.0;
+    let anchor = pos2(rect.right() - 14.0 - width, rect.top() + 14.0);
+    let chip_rect = Rect::from_min_size(anchor, galley.size() + vec2(16.0, 8.0));
+    painter.rect_filled(
+        chip_rect,
+        CornerRadius::same(5),
+        Color32::from_rgba_unmultiplied(17, 22, 28, 236),
+    );
+    painter.rect_stroke(
+        chip_rect,
+        CornerRadius::same(5),
+        Stroke::new(1.0, theme::BORDER),
+        StrokeKind::Inside,
+    );
+    painter.galley(chip_rect.min + vec2(8.0, 4.0), galley, theme::TEXT_MUTED);
+}
+
 fn draw_scale_bar(painter: &Painter, rect: Rect, app: &PbcCam) {
     let zoom = app.view.zoom();
     let length_mm = view::scale_bar_mm(zoom, 120.0);
@@ -297,7 +618,7 @@ fn draw_scale_bar(painter: &Painter, rect: Rect, app: &PbcCam) {
     painter.text(
         pos2(start.x + length_px / 2.0, start.y - 8.0),
         Align2::CENTER_BOTTOM,
-        view::format_length(length_mm as f32, app.project.units()),
+        view::format_length(length_mm as f32, app.project().units()),
         FontId::monospace(10.0),
         theme::TEXT_MUTED,
     );

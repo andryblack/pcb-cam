@@ -2,20 +2,26 @@
 
 use std::path::PathBuf;
 
-use crate::layer::{Layer, LayerId, SourceFormat};
+use crate::geometry::{Bounds, LayerGeometry};
+use crate::layer::{Layer, LayerId, SourceFormat, suggest_color};
+use crate::operation::{Operation, OperationId, OperationKind};
+use crate::tool::{Tool, ToolId, ToolKind};
 use crate::units::Unit;
 
 /// Default name of an unsaved project.
 pub const UNTITLED_PROJECT: &str = "Untitled";
 
-/// A PCB CAM project: a named collection of source layers and its preferred
-/// display units.
+/// A PCB CAM project: source layers, a tool table and an ordered operation timeline.
 #[derive(Debug, Clone)]
 pub struct Project {
     name: String,
     layers: Vec<Layer>,
+    tools: Vec<Tool>,
+    operations: Vec<Operation>,
     units: Unit,
     next_layer_id: u64,
+    next_tool_id: u64,
+    next_operation_id: u64,
 }
 
 impl Default for Project {
@@ -36,8 +42,12 @@ impl Project {
                 name.to_owned()
             },
             layers: Vec::new(),
+            tools: Vec::new(),
+            operations: Vec::new(),
             units: Unit::Millimeter,
             next_layer_id: 1,
+            next_tool_id: 1,
+            next_operation_id: 1,
         }
     }
 
@@ -55,7 +65,7 @@ impl Project {
         }
     }
 
-    /// All layers, in display order.
+    /// All source layers, in display order.
     pub fn layers(&self) -> &[Layer] {
         &self.layers
     }
@@ -70,32 +80,48 @@ impl Project {
         self.layers.iter_mut().find(|layer| layer.id() == id)
     }
 
-    /// Add a source layer and return its new identifier.
+    /// Add a parsed source layer and return its new identifier.
     ///
     /// An empty `name` is replaced with a generated format-based name.
     pub fn add_layer(
         &mut self,
         name: impl Into<String>,
-        format: SourceFormat,
         source: Option<PathBuf>,
+        color: Option<[u8; 3]>,
+        geometry: LayerGeometry,
     ) -> LayerId {
         let id = LayerId::new(self.next_layer_id);
         self.next_layer_id += 1;
 
+        let format = match geometry {
+            LayerGeometry::Gerber(_) => SourceFormat::Gerber,
+            LayerGeometry::Excellon(_) => SourceFormat::Excellon,
+        };
         let mut name = name.into();
         if name.trim().is_empty() {
             name = format!("{} {}", format.label(), self.layers.len() + 1);
         }
+        let color = color.unwrap_or_else(|| suggest_color(&name, format, self.layers.len()));
 
-        self.layers.push(Layer::new(id, name, format, source));
+        self.layers
+            .push(Layer::new(id, name, source, color, geometry));
         id
     }
 
-    /// Remove a layer. Returns `true` when a layer was removed.
+    /// Remove a layer and any operations and imported tools that depend on it.
+    ///
+    /// Returns `true` when a layer was removed.
     pub fn remove_layer(&mut self, id: LayerId) -> bool {
         let before = self.layers.len();
         self.layers.retain(|layer| layer.id() != id);
-        self.layers.len() != before
+        if self.layers.len() == before {
+            return false;
+        }
+
+        self.operations
+            .retain(|operation| operation.source_layer() != id);
+        self.tools.retain(|tool| tool.source_layer() != Some(id));
+        true
     }
 
     /// Show or hide a layer. Returns `true` when the layer exists.
@@ -106,6 +132,131 @@ impl Project {
         } else {
             false
         }
+    }
+
+    /// Bounding box of all layers, or only visible ones.
+    pub fn bounds(&self, visible_only: bool) -> Option<Bounds> {
+        self.layers
+            .iter()
+            .filter(|layer| !visible_only || layer.visible())
+            .filter_map(Layer::bounds)
+            .reduce(Bounds::union)
+    }
+
+    /// Number of visible layers.
+    pub fn visible_layer_count(&self) -> usize {
+        self.layers.iter().filter(|layer| layer.visible()).count()
+    }
+
+    /// Total number of drawing primitives, holes and slots.
+    pub fn object_count(&self) -> usize {
+        self.layers.iter().map(Layer::object_count).sum()
+    }
+
+    /// All tools in the project tool table.
+    pub fn tools(&self) -> &[Tool] {
+        &self.tools
+    }
+
+    /// Look up a tool.
+    pub fn tool(&self, id: ToolId) -> Option<&Tool> {
+        self.tools.iter().find(|tool| tool.id() == id)
+    }
+
+    /// Look up a tool mutably.
+    pub fn tool_mut(&mut self, id: ToolId) -> Option<&mut Tool> {
+        self.tools.iter_mut().find(|tool| tool.id() == id)
+    }
+
+    /// Add a tool to the table.
+    pub fn add_tool(
+        &mut self,
+        name: impl Into<String>,
+        kind: ToolKind,
+        diameter_mm: f64,
+        source_layer: Option<LayerId>,
+    ) -> ToolId {
+        let id = ToolId::new(self.next_tool_id);
+        self.next_tool_id += 1;
+
+        let mut name = name.into();
+        if name.trim().is_empty() {
+            name = format!("{} {:.2} mm", kind.label(), diameter_mm.max(0.0));
+        }
+        self.tools
+            .push(Tool::new(id, name, kind, diameter_mm, source_layer));
+        id
+    }
+
+    /// Remove a tool. Returns `true` when it existed.
+    pub fn remove_tool(&mut self, id: ToolId) -> bool {
+        let before = self.tools.len();
+        self.tools.retain(|tool| tool.id() != id);
+        self.tools.len() != before
+    }
+
+    /// Operations in execution order.
+    pub fn operations(&self) -> &[Operation] {
+        &self.operations
+    }
+
+    /// Look up an operation.
+    pub fn operation(&self, id: OperationId) -> Option<&Operation> {
+        self.operations
+            .iter()
+            .find(|operation| operation.id() == id)
+    }
+
+    /// Look up an operation mutably.
+    pub fn operation_mut(&mut self, id: OperationId) -> Option<&mut Operation> {
+        self.operations
+            .iter_mut()
+            .find(|operation| operation.id() == id)
+    }
+
+    /// Add an operation to the end of the timeline.
+    pub fn add_operation(&mut self, name: impl Into<String>, kind: OperationKind) -> OperationId {
+        let id = OperationId::new(self.next_operation_id);
+        self.next_operation_id += 1;
+
+        let mut name = name.into();
+        if name.trim().is_empty() {
+            name = format!("Operation {}", self.operations.len() + 1);
+        }
+        self.operations.push(Operation::new(id, name, kind));
+        id
+    }
+
+    /// Remove an operation. Returns `true` when it existed.
+    pub fn remove_operation(&mut self, id: OperationId) -> bool {
+        let before = self.operations.len();
+        self.operations.retain(|operation| operation.id() != id);
+        self.operations.len() != before
+    }
+
+    /// Move an operation to a new index in the timeline.
+    pub fn move_operation(&mut self, id: OperationId, target: usize) -> bool {
+        let Some(index) = self
+            .operations
+            .iter()
+            .position(|operation| operation.id() == id)
+        else {
+            return false;
+        };
+        let operation = self.operations.remove(index);
+        let target = target.min(self.operations.len());
+        self.operations.insert(target, operation);
+        true
+    }
+
+    /// Number of enabled drilling operations.
+    pub fn enabled_drill_count(&self) -> usize {
+        self.operations
+            .iter()
+            .filter(|operation| {
+                operation.enabled() && matches!(operation.kind(), OperationKind::Drill(_))
+            })
+            .count()
     }
 
     /// Preferred display unit.
@@ -127,6 +278,23 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::{GerberLayer, Point, Primitive};
+    use crate::operation::DrillOperation;
+
+    fn layer() -> LayerGeometry {
+        LayerGeometry::Gerber(GerberLayer::default())
+    }
+
+    fn point_layer(x: f64) -> LayerGeometry {
+        let mut gerber = GerberLayer::default();
+        gerber.primitives.push(Primitive::Flash {
+            position: Point::new(x, 0.0),
+            aperture: crate::geometry::Aperture::circle(1.0),
+            rotation_degrees: 0.0,
+            polarity: crate::geometry::Polarity::Dark,
+        });
+        LayerGeometry::Gerber(gerber)
+    }
 
     #[test]
     fn empty_project_is_untitled_in_millimetres() {
@@ -134,6 +302,7 @@ mod tests {
         assert_eq!(project.name(), UNTITLED_PROJECT);
         assert_eq!(project.units(), Unit::Millimeter);
         assert!(project.is_empty());
+        assert_eq!(project.object_count(), 0);
     }
 
     #[test]
@@ -145,35 +314,69 @@ mod tests {
     #[test]
     fn layers_get_stable_unique_ids() {
         let mut project = Project::new("Board");
-        let first = project.add_layer("Top copper", SourceFormat::Gerber, None);
-        let second = project.add_layer("", SourceFormat::Excellon, None);
+        let first = project.add_layer("Top copper", None, None, layer());
+        let second = project.add_layer("", None, None, layer());
 
         assert_ne!(first, second);
         assert_eq!(project.layers().len(), 2);
         assert_eq!(project.layer(first).unwrap().name(), "Top copper");
-        assert_eq!(project.layer(second).unwrap().name(), "Excellon 2");
+        assert_eq!(project.layer(second).unwrap().name(), "Gerber 2");
     }
 
     #[test]
     fn layer_visibility_can_be_toggled() {
         let mut project = Project::default();
-        let id = project.add_layer("Drill", SourceFormat::Excellon, None);
+        let id = project.add_layer("Drill", None, None, layer());
 
         assert!(project.layer(id).unwrap().visible());
         assert!(project.set_layer_visible(id, false));
         assert!(!project.layer(id).unwrap().visible());
-        assert!(!project.set_layer_visible(crate::LayerId::new(99), false));
+        assert!(!project.set_layer_visible(LayerId::new(99), false));
+        assert_eq!(project.visible_layer_count(), 0);
     }
 
     #[test]
-    fn removing_a_layer_keeps_the_others() {
+    fn removing_a_layer_keeps_the_others_and_drops_operations() {
         let mut project = Project::default();
-        let first = project.add_layer("A", SourceFormat::Gerber, None);
-        let second = project.add_layer("B", SourceFormat::Gerber, None);
+        let first = project.add_layer("A", None, None, layer());
+        let second = project.add_layer("B", None, None, layer());
+        let tool = project.add_tool("T1", ToolKind::Drill, 0.8, Some(first));
+        let operation =
+            project.add_operation("Drill A", OperationKind::Drill(DrillOperation::new(first)));
 
         assert!(project.remove_layer(first));
         assert!(!project.remove_layer(first));
         assert_eq!(project.layers().len(), 1);
         assert_eq!(project.layer(second).unwrap().name(), "B");
+        assert!(project.tool(tool).is_none());
+        assert!(project.operation(operation).is_none());
+    }
+
+    #[test]
+    fn project_bounds_follow_visibility() {
+        let mut project = Project::default();
+        let left = project.add_layer("left", None, None, point_layer(0.0));
+        let right = project.add_layer("right", None, None, point_layer(10.0));
+        let bounds = project.bounds(true).unwrap();
+        assert!((bounds.width() - 11.0).abs() < 1e-9);
+        project.set_layer_visible(left, false);
+        let bounds = project.bounds(true).unwrap();
+        assert!((bounds.width() - 1.0).abs() < 1e-9);
+        project.set_layer_visible(right, false);
+        assert!(project.bounds(true).is_none());
+    }
+
+    #[test]
+    fn operations_can_be_reordered() {
+        let mut project = Project::default();
+        let a = project.add_layer("A", None, None, layer());
+        let first = project.add_operation("one", OperationKind::Drill(DrillOperation::new(a)));
+        let second = project.add_operation("two", OperationKind::Drill(DrillOperation::new(a)));
+
+        assert!(project.move_operation(second, 0));
+        assert_eq!(project.operations()[0].id(), second);
+        assert_eq!(project.operations()[1].id(), first);
+        assert!(project.remove_operation(second));
+        assert_eq!(project.operations().len(), 1);
     }
 }

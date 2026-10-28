@@ -1,6 +1,6 @@
 //! Canvas camera and unit formatting helpers.
 
-use eframe::egui::{Pos2, Rect, Vec2, pos2};
+use eframe::egui::{Pos2, Rect, Vec2, pos2, vec2};
 use pbc_cam_core::Unit;
 
 /// Zoom at which the canvas is considered to be at 100 %.
@@ -56,6 +56,25 @@ impl ViewState {
     pub(crate) fn reset(&mut self) {
         self.zoom = BASE_ZOOM;
         self.pan = Vec2::ZERO;
+        self.hovered_mm = None;
+    }
+
+    /// Fit a bounding box into the canvas, leaving a margin for overlays.
+    pub(crate) fn fit_bounds(&mut self, bounds: pbc_cam_core::Bounds, canvas: Rect, margin: f32) {
+        let available = vec2(
+            (canvas.width() - margin * 2.0).max(24.0),
+            (canvas.height() - margin * 2.0).max(24.0),
+        );
+        let width = bounds.width().max(0.001) as f32;
+        let height = bounds.height().max(0.001) as f32;
+        self.zoom = (available.x / width)
+            .min(available.y / height)
+            .clamp(MIN_ZOOM, MAX_ZOOM);
+        let center = bounds.center();
+        self.pan = vec2(
+            -(center.x as f32) * self.zoom,
+            (center.y as f32) * self.zoom,
+        );
         self.hovered_mm = None;
     }
 
@@ -142,7 +161,6 @@ pub(crate) fn format_coordinate(mm: f32, unit: Unit) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eframe::egui::vec2;
 
     #[test]
     fn screen_and_world_round_trip() {
@@ -171,6 +189,22 @@ mod tests {
     fn grid_step_grows_when_zooming_out() {
         assert!(grid_step_mm(10.0) >= 1.0);
         assert!(grid_step_mm(0.5) > grid_step_mm(10.0));
+    }
+
+    #[test]
+    fn fitting_centres_and_contains_the_bounds() {
+        let mut view = ViewState::default();
+        let canvas = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0));
+        let bounds = pbc_cam_core::Bounds {
+            min: pbc_cam_core::Point::new(10.0, 20.0),
+            max: pbc_cam_core::Point::new(90.0, 70.0),
+        };
+        view.fit_bounds(bounds, canvas, 40.0);
+        let top_left = view.world_to_screen(pos2(bounds.min.x as f32, bounds.min.y as f32), canvas);
+        let bottom_right =
+            view.world_to_screen(pos2(bounds.max.x as f32, bounds.max.y as f32), canvas);
+        assert!(canvas.contains(top_left));
+        assert!(canvas.contains(bottom_right));
     }
 
     #[test]

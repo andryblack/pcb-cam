@@ -1,12 +1,14 @@
-//! Project and layer tree panel.
+//! Browser panel: project summary, source layers and the tool table.
 
-use eframe::egui::{self, Align, Frame, Layout, Margin, RichText, Sense, Stroke, Ui, Vec2};
+use eframe::egui::{
+    self, Align, Button, Color32, Frame, Layout, Margin, RichText, Sense, Stroke, Ui, Vec2,
+};
 
-use crate::app::PbcCam;
+use crate::app::{PbcCam, Selection};
 use crate::theme;
 use crate::ui::widgets;
 
-/// Draw the left project panel.
+/// Draw the left browser panel.
 pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
     let frame = Frame::new()
         .fill(theme::PANEL)
@@ -14,51 +16,40 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         .stroke(Stroke::new(1.0, theme::BORDER));
 
     egui::Panel::left("project_panel")
-        .default_size(252.0)
-        .min_size(220.0)
-        .max_size(360.0)
+        .default_size(268.0)
+        .min_size(232.0)
+        .max_size(390.0)
         .resizable(true)
         .frame(frame)
         .show_separator_line(false)
         .show(ui, |ui| {
-            widgets::panel_header(ui, "Project", &mut app.settings.show_project_panel);
-            ui.add_space(8.0);
+            widgets::panel_header(ui, "Browser", &mut app.settings.show_project_panel);
+            ui.add_space(6.0);
 
-            project_card(ui, app);
-            ui.add_space(16.0);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    project_card(ui, app);
+                    ui.add_space(14.0);
 
-            ui.horizontal(|ui| {
-                widgets::section_label(ui, "Layers");
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    widgets::pill(
-                        ui,
-                        &app.project.layers().len().to_string(),
-                        theme::TEXT_MUTED,
-                    );
+                    section_header(ui, "Layers", app.project().layers().len());
+                    ui.add_space(4.0);
+                    layer_list(ui, app);
+                    ui.add_space(8.0);
+                    import_buttons(ui, app);
+
+                    ui.add_space(16.0);
+                    widgets::hairline(ui);
+                    ui.add_space(10.0);
+                    section_header(ui, "Tools", app.project().tools().len());
+                    ui.add_space(4.0);
+                    tool_list(ui, app);
+
+                    ui.add_space(16.0);
+                    widgets::hairline(ui);
+                    ui.add_space(10.0);
+                    output_section(ui, app);
                 });
-            });
-            ui.add_space(5.0);
-
-            if app.project.is_empty() {
-                widgets::hint_card(
-                    ui,
-                    "No source layers",
-                    "Gerber and Excellon files will appear here once import lands in the next milestone.",
-                );
-            } else {
-                layer_list(ui, app);
-            }
-
-            ui.add_space(18.0);
-            widgets::hairline(ui);
-            ui.add_space(10.0);
-            widgets::section_label(ui, "Output");
-            ui.add_space(5.0);
-            widgets::hint_card(
-                ui,
-                "No G-code yet",
-                "Toolpaths and post-processed NC output will be generated from visible layers.",
-            );
         });
 }
 
@@ -71,15 +62,23 @@ fn project_card(ui: &mut Ui, app: &PbcCam) {
             ui.add_space(2.0);
             ui.vertical(|ui| {
                 ui.label(
-                    RichText::new(app.project.name())
+                    RichText::new(app.project().name())
                         .size(14.0)
                         .strong()
                         .color(theme::TEXT),
                 );
                 ui.label(
-                    RichText::new("PCB fabrication project")
-                        .size(10.5)
-                        .color(theme::TEXT_MUTED),
+                    RichText::new(format!(
+                        "{} operation{}",
+                        app.project().operations().len(),
+                        if app.project().operations().len() == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ))
+                    .size(10.5)
+                    .color(theme::TEXT_MUTED),
                 );
             });
         });
@@ -87,15 +86,11 @@ fn project_card(ui: &mut Ui, app: &PbcCam) {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            stat(ui, "LAYERS", &app.project.layers().len().to_string());
-            ui.add_space(22.0);
-            stat(
-                ui,
-                "UNITS",
-                &app.project.units().symbol().to_ascii_uppercase(),
-            );
-            ui.add_space(22.0);
-            stat(ui, "TOOLPATHS", "0");
+            stat(ui, "LAYERS", &app.project().layers().len().to_string());
+            ui.add_space(20.0);
+            stat(ui, "TOOLS", &app.project().tools().len().to_string());
+            ui.add_space(20.0);
+            stat(ui, "OBJECTS", &app.project().object_count().to_string());
         });
     });
 }
@@ -112,29 +107,47 @@ fn stat(ui: &mut Ui, label: &str, value: &str) {
     });
 }
 
-fn layer_list(ui: &mut Ui, app: &mut PbcCam) {
-    let mut visibility_change = None;
-    let mut selection_change = None;
+fn section_header(ui: &mut Ui, title: &str, count: usize) {
+    ui.horizontal(|ui| {
+        widgets::section_label(ui, title);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            widgets::pill(ui, &count.to_string(), theme::TEXT_MUTED);
+        });
+    });
+}
 
-    for layer in app.project.layers() {
-        let selected = app.selected_layer == Some(layer.id());
+fn layer_list(ui: &mut Ui, app: &mut PbcCam) {
+    if app.project().layers().is_empty() {
+        widgets::hint_card(
+            ui,
+            "No source layers",
+            "Import a Gerber copper, outline or silkscreen layer, or an Excellon drill file.",
+        );
+        return;
+    }
+
+    let mut visibility_change = None;
+    let mut selection = None;
+
+    for layer in app.project().layers() {
+        let selected = app.selection == Some(Selection::Layer(layer.id()));
         let mut visible = layer.visible();
 
         ui.horizontal(|ui| {
             if ui
                 .add(egui::Checkbox::new(&mut visible, ""))
-                .on_hover_text("Toggle layer visibility")
+                .on_hover_text("Toggle visibility")
                 .changed()
             {
                 visibility_change = Some((layer.id(), visible));
             }
 
-            let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(7.0), Sense::hover());
+            let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
             ui.painter().circle_filled(
                 dot_rect.center(),
-                3.0,
+                3.5,
                 if visible {
-                    theme::COPPER
+                    color(layer.color())
                 } else {
                     theme::TEXT_FAINT
                 },
@@ -146,7 +159,7 @@ fn layer_list(ui: &mut Ui, app: &mut PbcCam) {
                 theme::TEXT
             });
             if ui.selectable_label(selected, name).clicked() {
-                selection_change = Some(layer.id());
+                selection = Some(Selection::Layer(layer.id()));
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -155,20 +168,129 @@ fn layer_list(ui: &mut Ui, app: &mut PbcCam) {
                         .size(9.0)
                         .color(theme::TEXT_FAINT),
                 );
+                ui.label(
+                    RichText::new(layer.object_count().to_string())
+                        .size(9.5)
+                        .monospace()
+                        .color(theme::TEXT_MUTED),
+                );
             });
         });
     }
 
     if let Some((id, visible)) = visibility_change {
-        app.project.set_layer_visible(id, visible);
-    }
-    if let Some(id) = selection_change {
-        app.selected_layer = Some(id);
-        app.status = format!(
-            "Selected layer: {}",
-            app.project
-                .layer(id)
-                .map_or("unknown", pbc_cam_core::Layer::name)
+        app.run_command(
+            "layer.set_visible",
+            serde_json::json!({"id": id.value(), "visible": visible}),
         );
     }
+    if let Some(selection) = selection {
+        app.selection = Some(selection);
+    }
+}
+
+fn import_buttons(ui: &mut Ui, app: &mut PbcCam) {
+    let width = (ui.available_width() - 6.0) / 2.0;
+    ui.horizontal(|ui| {
+        if ui
+            .add_sized(
+                egui::vec2(width.min(110.0), 25.0),
+                Button::new(RichText::new("+ Gerber").size(11.0)),
+            )
+            .clicked()
+        {
+            app.import_gerber_dialog();
+        }
+        if ui
+            .add_sized(
+                egui::vec2(width.min(110.0), 25.0),
+                Button::new(RichText::new("+ Excellon").size(11.0)),
+            )
+            .clicked()
+        {
+            app.import_excellon_dialog();
+        }
+    });
+}
+
+fn tool_list(ui: &mut Ui, app: &mut PbcCam) {
+    if app.project().tools().is_empty() {
+        widgets::hint_card(
+            ui,
+            "No tools",
+            "Drill tools are created automatically when an Excellon file is imported.",
+        );
+        return;
+    }
+
+    let mut selection = None;
+    for tool in app.project().tools() {
+        let selected = app.selection == Some(Selection::Tool(tool.id()));
+        ui.horizontal(|ui| {
+            let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(7.0), Sense::hover());
+            ui.painter()
+                .circle_filled(dot_rect.center(), 3.0, theme::ACCENT);
+            let name = RichText::new(tool.name()).size(11.5).color(if selected {
+                theme::COPPER_BRIGHT
+            } else {
+                theme::TEXT
+            });
+            if ui.selectable_label(selected, name).clicked() {
+                selection = Some(Selection::Tool(tool.id()));
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(
+                    RichText::new(format!("{:.2} mm", tool.diameter_mm()))
+                        .size(9.5)
+                        .monospace()
+                        .color(theme::TEXT_MUTED),
+                );
+            });
+        });
+    }
+    if let Some(selection) = selection {
+        app.selection = Some(selection);
+    }
+}
+
+fn output_section(ui: &mut Ui, app: &mut PbcCam) {
+    let enabled = app.project().enabled_drill_count();
+    widgets::card_frame().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(
+            RichText::new("NC program")
+                .size(12.0)
+                .strong()
+                .color(theme::TEXT),
+        );
+        ui.add_space(2.0);
+        if enabled == 0 {
+            ui.label(
+                RichText::new("Add an enabled drilling operation to generate a G-code program.")
+                    .size(10.5)
+                    .color(theme::TEXT_FAINT),
+            );
+        } else {
+            ui.label(
+                RichText::new(format!(
+                    "{enabled} enabled drill operation{} ready",
+                    if enabled == 1 { "" } else { "s" }
+                ))
+                .size(10.5)
+                .color(theme::TEXT_MUTED),
+            );
+            ui.add_space(6.0);
+            let export = ui.add_sized(
+                egui::vec2(ui.available_width(), 25.0),
+                Button::new(RichText::new("Export G-code…").size(11.0)),
+            );
+            if export.clicked() {
+                app.export_gcode_dialog();
+            }
+        }
+    });
+}
+
+fn color([r, g, b]: [u8; 3]) -> Color32 {
+    Color32::from_rgb(r, g, b)
 }

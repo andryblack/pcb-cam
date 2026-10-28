@@ -27,9 +27,13 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         .strong()
                         .color(theme::TEXT),
                 );
-                widgets::pill(ui, "UI PREVIEW", theme::COPPER);
+                ui.label(
+                    RichText::new(format!("v{}", crate::app::VERSION))
+                        .size(9.5)
+                        .color(theme::TEXT_FAINT),
+                );
 
-                ui.add_space(4.0);
+                ui.add_space(2.0);
                 ui.separator();
 
                 ui.label(
@@ -39,16 +43,49 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         .color(theme::TEXT_FAINT),
                 );
                 ui.label(
-                    RichText::new(app.project.name())
+                    RichText::new(app.project().name())
                         .size(13.0)
                         .strong()
                         .color(theme::TEXT),
                 );
+                if app.session.dirty() {
+                    ui.label(RichText::new("*").size(12.0).color(theme::COPPER));
+                }
                 ui.label(
-                    RichText::new(layer_count_label(app.project.layers().len()))
+                    RichText::new(layer_count_label(app.project().layers().len()))
                         .size(10.5)
                         .color(theme::TEXT_MUTED),
                 );
+
+                ui.add_space(4.0);
+                ui.separator();
+
+                let gerber = ui
+                    .add(Button::new(RichText::new("Gerber").size(11.5)))
+                    .on_hover_text("Import a Gerber layer (Cmd/Ctrl+O)");
+                if gerber.clicked() {
+                    app.import_gerber_dialog();
+                }
+                let excellon = ui
+                    .add(Button::new(RichText::new("Excellon").size(11.5)))
+                    .on_hover_text("Import an Excellon drill file (Cmd/Ctrl+Shift+O)");
+                if excellon.clicked() {
+                    app.import_excellon_dialog();
+                }
+
+                let can_add_drill = app.can_add_drill_operation();
+                let add_drill = ui.add_enabled(
+                    can_add_drill,
+                    Button::new(RichText::new("Drill").size(11.5)),
+                );
+                if add_drill.clicked() {
+                    app.add_drill_operation();
+                }
+                if !can_add_drill {
+                    add_drill.on_disabled_hover_text(
+                        "Import an Excellon layer with holes or slots first",
+                    );
+                }
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     unit_switch(ui, app);
@@ -67,10 +104,30 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     }
 
                     let fit = ui
-                        .add(Button::new(RichText::new("Fit view").size(11.5)))
-                        .on_hover_text("Reset canvas view (F)");
+                        .add(Button::new(RichText::new("Fit").size(11.5)))
+                        .on_hover_text("Fit project into the canvas (F)");
                     if fit.clicked() {
-                        app.reset_view();
+                        app.fit_view();
+                    }
+
+                    ui.separator();
+                    let redo = ui
+                        .add_enabled(
+                            app.session.can_redo(),
+                            Button::new(RichText::new("Redo").size(11.5)),
+                        )
+                        .on_hover_text("Redo");
+                    if redo.clicked() {
+                        app.redo();
+                    }
+                    let undo = ui
+                        .add_enabled(
+                            app.session.can_undo(),
+                            Button::new(RichText::new("Undo").size(11.5)),
+                        )
+                        .on_hover_text("Undo");
+                    if undo.clicked() {
+                        app.undo();
                     }
                 });
             });
@@ -78,7 +135,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
 }
 
 fn unit_switch(ui: &mut Ui, app: &mut PbcCam) {
-    let current = app.project.units();
+    let current = app.project().units();
     let mut picked = current;
 
     Frame::new()

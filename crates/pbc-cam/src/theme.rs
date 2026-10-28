@@ -37,6 +37,8 @@ pub(crate) const COPPER_BRIGHT: Color32 = Color32::from_rgb(243, 191, 132);
 pub(crate) const COPPER_DIM: Color32 = Color32::from_rgb(124, 87, 52);
 /// Success and ready-state accent.
 pub(crate) const ACCENT: Color32 = Color32::from_rgb(104, 204, 169);
+/// Error text and status dot.
+pub(crate) const ERROR: Color32 = Color32::from_rgb(233, 112, 112);
 /// Minor canvas grid lines.
 pub(crate) const GRID_MINOR: Color32 = Color32::from_rgb(18, 24, 31);
 /// Major canvas grid lines.

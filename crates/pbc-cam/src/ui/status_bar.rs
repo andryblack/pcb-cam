@@ -20,19 +20,39 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(7.0), Sense::hover());
-                ui.painter()
-                    .circle_filled(dot_rect.center(), 3.0, theme::ACCENT);
+                ui.painter().circle_filled(
+                    dot_rect.center(),
+                    3.0,
+                    if app.status_error {
+                        theme::ERROR
+                    } else {
+                        theme::ACCENT
+                    },
+                );
 
                 ui.label(
                     RichText::new(&app.status)
                         .size(10.5)
-                        .color(theme::TEXT_MUTED),
+                        .color(if app.status_error {
+                            theme::ERROR
+                        } else {
+                            theme::TEXT_MUTED
+                        }),
                 );
                 ui.separator();
                 ui.label(
-                    RichText::new(layer_count(app.project.layers().len()))
-                        .size(10.5)
-                        .color(theme::TEXT_FAINT),
+                    RichText::new(format!(
+                        "{} · {} objects{}",
+                        layer_count(app.project().layers().len()),
+                        app.project().object_count(),
+                        if app.session.dirty() {
+                            " · unsaved"
+                        } else {
+                            ""
+                        }
+                    ))
+                    .size(10.0)
+                    .color(theme::TEXT_FAINT),
                 );
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -44,7 +64,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     );
                     ui.separator();
                     ui.label(
-                        RichText::new(app.project.units().symbol().to_ascii_uppercase())
+                        RichText::new(app.project().units().symbol().to_ascii_uppercase())
                             .size(10.0)
                             .monospace()
                             .color(theme::COPPER),
@@ -62,7 +82,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
 }
 
 fn cursor_position(app: &PbcCam) -> String {
-    let units = app.project.units();
+    let units = app.project().units();
     match app.view.hovered_mm() {
         Some(position) => format!(
             "X {}   Y {}",

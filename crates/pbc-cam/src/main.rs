@@ -11,6 +11,8 @@ mod theme;
 mod ui;
 mod view;
 
+use std::path::PathBuf;
+
 use eframe::egui;
 
 fn main() -> eframe::Result {
@@ -19,15 +21,25 @@ fn main() -> eframe::Result {
     )
     .init();
 
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon.png"))
-        .expect("the bundled window icon must be a valid PNG");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let sample = args.iter().any(|arg| arg == "--sample" || arg == "--demo");
+    let files: Vec<PathBuf> = args
+        .into_iter()
+        .filter(|arg| !arg.starts_with('-'))
+        .map(PathBuf::from)
+        .collect();
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title(app::WINDOW_TITLE)
+        .with_inner_size([1280.0, 800.0])
+        .with_min_inner_size([960.0, 600.0]);
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon.png"))
+    {
+        viewport = viewport.with_icon(icon);
+    }
 
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(app::WINDOW_TITLE)
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([960.0, 600.0])
-            .with_icon(icon),
+        viewport,
         centered: true,
         ..Default::default()
     };
@@ -35,6 +47,16 @@ fn main() -> eframe::Result {
     eframe::run_native(
         app::APP_NAME,
         native_options,
-        Box::new(|cc| Ok(Box::new(app::PbcCam::new(cc)))),
+        Box::new(move |cc| {
+            let mut app = app::PbcCam::new(cc);
+            if sample {
+                app.load_demo();
+            } else {
+                for file in files {
+                    app.import_path(file);
+                }
+            }
+            Ok(Box::new(app))
+        }),
     )
 }
