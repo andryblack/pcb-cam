@@ -54,7 +54,7 @@ Implemented:
 - **Tasks** with type-specific settings:
   - **Drilling** — source-hole filter, machining tool, depth, retract, feed, plunge, dwell, helical step-down, spindle
   - **Contour cut** — machining tool, outside/inside/on-line offset, depth, retract, feed, plunge, spindle
-  - **Engraving** — machining tool, depth, retract, feed, plunge, spindle
+  - **Engraving** — machining tool, outside/inside offset, pass count, offset step, depth, retract, feed, plunge, spindle
 - Task timeline with selection, enable/disable, creation, reordering and online editing in the inspector
 - Selected-task canvas overlay in red: drill/slot positions, contour-cut offset toolpath or engraving paths
 - **Helical interpolation** for holes larger than the selected end mill/V-bit. A 1.0 mm end mill can machine a 1.5 mm hole with a helical path; a drill bit is rejected because it cannot side-cut.
@@ -100,7 +100,7 @@ Next:
 - Gerber source apertures are listed, but currently only **drilling tasks** use source tools as filters. Contour-cut and engraving tasks process the whole layer.
 - Gerber regions are triangulated; regions with multiple nested contours/islands may not be fully supported yet.
 - Contour offsets use mitred joins without a full self-intersection cleanup.
-- Engraving follows outlines and paths; filled/hardened area clearing is not implemented.
+- Engraving follows outlines and paths; filled/hardened area clearing is not implemented. Side/offset passes apply to closed contours; open paths are engraved once on the centreline.
 - Slots narrower than the machining tool are rejected; wider slots are routed on the centreline, which may not clear the full slot width.
 - Projects are not saved yet; the machining tool library is persisted, generated G-code is the durable output.
 - G-code is emitted in millimetres with explicit drill/plunge moves. It does not yet include machine-specific headers, work offsets or cutter compensation.

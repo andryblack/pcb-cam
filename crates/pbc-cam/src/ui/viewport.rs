@@ -646,11 +646,11 @@ fn draw_task_overlay(painter: &Painter, rect: Rect, app: &PbcCam) {
                 }
             }
         }
-        OperationKind::Engrave(_) => {
+        OperationKind::Engrave(engrave) => {
             let LayerGeometry::Gerber(gerber) = layer.geometry() else {
                 return;
             };
-            for path in gerber.engraving_paths() {
+            for path in engrave.toolpaths(gerber) {
                 draw_task_path(painter, rect, &app.view, &path, color);
             }
         }

@@ -20,7 +20,7 @@ mod units;
 pub use layer::{Layer, LayerId, SourceFormat, SourceToolInfo, suggest_color};
 pub use operation::{
     ContourSide, CutoutOperation, CutoutTask, DrillOperation, DrillTask, EngraveOperation,
-    EngraveTask, Operation, OperationId, OperationKind, Task, TaskId, TaskKind,
+    EngraveSide, EngraveTask, Operation, OperationId, OperationKind, Task, TaskId, TaskKind,
 };
 pub use project::{Project, UNTITLED_PROJECT};
 pub use tool::{Tool, ToolId, ToolKind, ToolLibrary};

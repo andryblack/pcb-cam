@@ -2,7 +2,8 @@
 
 use eframe::egui::{self, Align, Button, Frame, Layout, Margin, RichText, Stroke, Ui, vec2};
 use pbc_cam_core::{
-    ContourSide, LayerGeometry, LayerId, OperationId, OperationKind, Tool, ToolId, Unit,
+    ContourSide, EngraveSide, LayerGeometry, LayerId, OperationId, OperationKind, Tool, ToolId,
+    Unit,
 };
 
 use crate::app::{PbcCam, Selection, TaskDraftKind};
@@ -494,12 +495,43 @@ fn task_details(
                 commit |= inline_u32(ui, "Spindle", spindle, 0..=60_000, " rpm");
             }
             TaskDraftKind::Engrave {
+                side,
+                offset,
+                passes,
+                stepover,
                 depth,
                 retract,
                 feed,
                 plunge,
                 spindle,
             } => {
+                ui.add_space(8.0);
+                widgets::section_label(ui, "Offset passes");
+                ui.add_space(3.0);
+                let mut changed_side = false;
+                ui.horizontal(|ui| {
+                    for candidate in [EngraveSide::Outside, EngraveSide::Inside] {
+                        if ui
+                            .add(Button::selectable(*side == candidate, candidate.label()))
+                            .clicked()
+                        {
+                            *side = candidate;
+                            changed_side = true;
+                        }
+                    }
+                });
+                commit |= changed_side;
+                commit |= inline_f64(ui, "Offset", offset, 0.0..=50.0, " mm");
+                commit |= inline_u32(ui, "Passes", passes, 1..=100, "");
+                commit |= inline_f64(ui, "Offset step", stepover, 0.0..=50.0, " mm");
+                ui.label(
+                    RichText::new(
+                        "Offset passes apply to closed contours; open paths are engraved once.",
+                    )
+                    .size(9.5)
+                    .color(theme::TEXT_FAINT),
+                );
+
                 ui.add_space(8.0);
                 widgets::section_label(ui, "Cut parameters");
                 ui.add_space(3.0);

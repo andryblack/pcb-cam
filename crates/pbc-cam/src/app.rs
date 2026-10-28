@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Align2, Button, Key, Modifiers, RichText, Stroke, Vec2};
 use pbc_cam_core::{
-    ContourSide, LayerGeometry, LayerId, OperationId, OperationKind, Project, SourceFormat, Task,
-    Tool, ToolId, ToolKind, ToolLibrary, Unit,
+    ContourSide, EngraveSide, LayerGeometry, LayerId, OperationId, OperationKind, Project,
+    SourceFormat, Task, Tool, ToolId, ToolKind, ToolLibrary, Unit,
 };
 use pbc_cam_engine::{Session, find_command};
 use serde_json::{Value, json};
@@ -113,6 +113,10 @@ pub(crate) enum TaskDraftKind {
         spindle: u32,
     },
     Engrave {
+        side: EngraveSide,
+        offset: f64,
+        passes: u32,
+        stepover: f64,
         depth: f64,
         retract: f64,
         feed: f64,
@@ -153,6 +157,10 @@ impl TaskDraft {
                 spindle: cutout.spindle_rpm,
             },
             OperationKind::Engrave(engrave) => TaskDraftKind::Engrave {
+                side: engrave.side,
+                offset: engrave.offset_mm,
+                passes: engrave.passes,
+                stepover: engrave.stepover_mm,
                 depth: engrave.depth_mm,
                 retract: engrave.retract_mm,
                 feed: engrave.feed_mm_min,
@@ -217,6 +225,10 @@ impl TaskDraft {
                 }),
             ),
             TaskDraftKind::Engrave {
+                side,
+                offset,
+                passes,
+                stepover,
                 depth,
                 retract,
                 feed,
@@ -228,6 +240,10 @@ impl TaskDraft {
                     "id": self.id.value(),
                     "name": self.name,
                     "tool": self.tool.value(),
+                    "side": side.id(),
+                    "offset": offset,
+                    "passes": passes,
+                    "stepover": stepover,
                     "depth": depth,
                     "retract": retract,
                     "feed": feed,

@@ -5,6 +5,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::geometry::{GerberLayer, Path, offset_closed_path};
 use crate::{LayerId, ToolId};
 
 /// Stable identifier of a task inside a [`Project`](crate::Project).
@@ -168,6 +169,42 @@ impl CutoutOperation {
     }
 }
 
+/// Which side of a closed engraving contour the passes are placed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EngraveSide {
+    /// Offset passes move outward from the contour.
+    #[default]
+    Outside,
+    /// Offset passes move inward into the contour.
+    Inside,
+}
+
+impl EngraveSide {
+    /// Human-readable label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Outside => "Outside",
+            Self::Inside => "Inside",
+        }
+    }
+
+    /// JSON value used by commands.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Outside => "outside",
+            Self::Inside => "inside",
+        }
+    }
+
+    /// Signed direction of an offset pass.
+    pub const fn sign(self) -> f64 {
+        match self {
+            Self::Outside => 1.0,
+            Self::Inside => -1.0,
+        }
+    }
+}
+
 /// Parameters of an engraving task.
 ///
 /// Engraving follows the paths and polygon outlines found in a Gerber layer:
@@ -186,6 +223,14 @@ pub struct EngraveOperation {
     pub feed_mm_min: f64,
     /// Z plunge rate.
     pub plunge_mm_min: f64,
+    /// Side of closed contours for multi-pass engraving.
+    pub side: EngraveSide,
+    /// Initial offset from the source contour, in millimetres.
+    pub offset_mm: f64,
+    /// Number of offset passes for closed contours.
+    pub passes: u32,
+    /// Offset increase between passes, in millimetres.
+    pub stepover_mm: f64,
     /// Spindle speed.
     pub spindle_rpm: u32,
 }
@@ -200,6 +245,10 @@ impl EngraveOperation {
             retract_mm: 2.0,
             feed_mm_min: 400.0,
             plunge_mm_min: 100.0,
+            side: EngraveSide::Outside,
+            offset_mm: 0.0,
+            passes: 1,
+            stepover_mm: 0.5,
             spindle_rpm: 12_000,
         }
     }
@@ -213,7 +262,46 @@ impl EngraveOperation {
             self.feed_mm_min,
             self.plunge_mm_min,
             self.spindle_rpm,
-        )
+        )?;
+        if !self.offset_mm.is_finite() || self.offset_mm < 0.0 {
+            return Err("engraving offset must not be negative".into());
+        }
+        if self.passes == 0 {
+            return Err("engraving passes must be at least one".into());
+        }
+        if !self.stepover_mm.is_finite() || self.stepover_mm < 0.0 {
+            return Err("engraving offset step must not be negative".into());
+        }
+        if self.passes > 1 && self.stepover_mm <= 0.0 {
+            return Err(
+                "engraving offset step must be greater than zero for multiple passes".into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Generate engraved paths, including the requested offset passes.
+    ///
+    /// Side/offset passes apply to closed contours. Open paths are line art and
+    /// are engraved once on their centreline.
+    pub fn toolpaths(&self, gerber: &GerberLayer) -> Vec<Path> {
+        let mut result = Vec::new();
+        for path in gerber.engraving_paths() {
+            if !path.closed {
+                result.push(path);
+                continue;
+            }
+            for pass in 0..self.passes {
+                let distance =
+                    self.side.sign() * (self.offset_mm + f64::from(pass) * self.stepover_mm);
+                if distance.abs() < 1e-9 {
+                    result.push(path.clone());
+                } else if let Some(offset) = offset_closed_path(&path, distance) {
+                    result.push(offset);
+                }
+            }
+        }
+        result
     }
 }
 
@@ -393,6 +481,8 @@ pub type EngraveTask = EngraveOperation;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::{Aperture, GerberLayer, Primitive};
+    use crate::{Point, Polarity};
 
     #[test]
     fn drill_defaults_validate() {
@@ -421,6 +511,42 @@ mod tests {
         assert!(engrave.validate().is_ok());
         engrave.depth_mm = -1.0;
         assert!(engrave.validate().is_err());
+        engrave.depth_mm = 0.2;
+        engrave.passes = 0;
+        assert!(engrave.validate().is_err());
+        engrave.passes = 2;
+        engrave.stepover_mm = 0.0;
+        assert!(engrave.validate().is_err());
+    }
+
+    #[test]
+    fn engrave_offset_passes_expand_closed_contours() {
+        let path = Path::closed(vec![
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 5.0),
+            Point::new(0.0, 5.0),
+        ]);
+        let gerber = GerberLayer {
+            primitives: vec![Primitive::Stroke {
+                path,
+                aperture: Aperture::circle(0.2),
+                polarity: Polarity::Dark,
+            }],
+            source_units: Some(crate::Unit::Millimeter),
+            warnings: Vec::new(),
+        };
+        let mut engrave = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
+        engrave.side = EngraveSide::Outside;
+        engrave.offset_mm = 0.1;
+        engrave.passes = 3;
+        engrave.stepover_mm = 0.2;
+        let paths = engrave.toolpaths(&gerber);
+        assert_eq!(paths.len(), 3);
+        let first = paths[0].bounds().unwrap();
+        let last = paths[2].bounds().unwrap();
+        assert!(last.width() > first.width());
+        assert!(last.height() > first.height());
     }
 
     #[test]

@@ -4,9 +4,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use pbc_cam_core::{
-    ContourSide, CutoutOperation, DrillOperation, EngraveOperation, LayerGeometry, LayerId,
-    OperationId, OperationKind, Project, ToolId, ToolKind, UNTITLED_PROJECT, generate_all_gcode,
-    generate_task_gcode, parse_excellon, parse_gerber,
+    ContourSide, CutoutOperation, DrillOperation, EngraveOperation, EngraveSide, LayerGeometry,
+    LayerId, OperationId, OperationKind, Project, ToolId, ToolKind, UNTITLED_PROJECT,
+    generate_all_gcode, generate_task_gcode, parse_excellon, parse_gerber,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -116,6 +116,10 @@ struct OperationAddEngraveParams {
     layer: u64,
     name: Option<String>,
     tool: Option<u64>,
+    side: Option<String>,
+    offset: Option<f64>,
+    passes: Option<u32>,
+    stepover: Option<f64>,
     depth: Option<f64>,
     retract: Option<f64>,
     feed: Option<f64>,
@@ -128,6 +132,10 @@ struct OperationUpdateEngraveParams {
     id: u64,
     name: Option<String>,
     tool: Option<u64>,
+    side: Option<String>,
+    offset: Option<f64>,
+    passes: Option<u32>,
+    stepover: Option<f64>,
     depth: Option<f64>,
     retract: Option<f64>,
     feed: Option<f64>,
@@ -539,6 +547,18 @@ pub(crate) fn operation_add_engrave(
     engrave.feed_mm_min = tool_defaults.feed_mm_min();
     engrave.plunge_mm_min = tool_defaults.plunge_mm_min();
     engrave.spindle_rpm = tool_defaults.spindle_rpm();
+    if let Some(side) = params.side.as_deref() {
+        engrave.side = parse_engrave_side(side)?;
+    }
+    if let Some(offset) = params.offset {
+        engrave.offset_mm = offset;
+    }
+    if let Some(passes) = params.passes {
+        engrave.passes = passes;
+    }
+    if let Some(stepover) = params.stepover {
+        engrave.stepover_mm = stepover;
+    }
     apply_milling_overrides(
         &mut engrave.depth_mm,
         &mut engrave.retract_mm,
@@ -579,6 +599,18 @@ pub(crate) fn operation_update_engrave(
     };
     if let Some(tool) = tool {
         engrave.tool = tool;
+    }
+    if let Some(side) = params.side.as_deref() {
+        engrave.side = parse_engrave_side(side)?;
+    }
+    if let Some(offset) = params.offset {
+        engrave.offset_mm = offset;
+    }
+    if let Some(passes) = params.passes {
+        engrave.passes = passes;
+    }
+    if let Some(stepover) = params.stepover {
+        engrave.stepover_mm = stepover;
     }
     apply_milling_overrides(
         &mut engrave.depth_mm,
@@ -890,6 +922,14 @@ pub(crate) fn redo(session: &mut Session, _params: &Value) -> Result<Value, Stri
         "can_undo": session.can_undo(),
         "can_redo": session.can_redo(),
     }))
+}
+
+fn parse_engrave_side(side: &str) -> Result<EngraveSide, String> {
+    match side {
+        "outside" => Ok(EngraveSide::Outside),
+        "inside" => Ok(EngraveSide::Inside),
+        other => Err(format!("unknown engrave side `{other}`")),
+    }
 }
 
 fn parse_side(side: &str) -> Result<ContourSide, String> {
@@ -1204,6 +1244,41 @@ M30
         };
         assert_eq!(drill.source_tools.len(), 1);
         assert_eq!(drill.stepdown_mm, 0.3);
+    }
+
+    #[test]
+    fn engrave_offset_parameters_are_stored() {
+        let mut session = Session::new();
+        let import = session
+            .execute(
+                "file.import_gerber",
+                &json!({"content": GERBER, "name": "Silk"}),
+            )
+            .unwrap();
+        let layer = import["layer"].as_u64().unwrap();
+        let created = session
+            .execute(
+                "task.add_engrave",
+                &json!({
+                    "layer": layer,
+                    "side": "inside",
+                    "offset": 0.2,
+                    "passes": 4,
+                    "stepover": 0.15,
+                }),
+            )
+            .unwrap();
+        let task = session
+            .project()
+            .task(OperationId::new(created["id"].as_u64().unwrap()))
+            .unwrap();
+        let OperationKind::Engrave(engrave) = task.kind() else {
+            panic!("expected engrave task");
+        };
+        assert_eq!(engrave.side, EngraveSide::Inside);
+        assert_eq!(engrave.offset_mm, 0.2);
+        assert_eq!(engrave.passes, 4);
+        assert_eq!(engrave.stepover_mm, 0.15);
     }
 
     #[test]

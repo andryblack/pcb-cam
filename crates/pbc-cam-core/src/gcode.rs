@@ -370,13 +370,22 @@ impl<'a> ProgramBuilder<'a> {
         let LayerGeometry::Gerber(gerber) = layer.geometry() else {
             return Err("engraving requires a Gerber layer".into());
         };
-        let paths = gerber.engraving_paths();
+        let paths = engrave.toolpaths(gerber);
         if paths.is_empty() {
             return Err("no paths found in the selected layer".into());
         }
         let tool = self.task_tool(task)?.clone();
 
         self.select_tool(&tool, engrave.retract_mm, engrave.spindle_rpm)?;
+        let _ = writeln!(
+            self.text,
+            "(Engrave {} side, offset {:.3} mm, {} pass{}, step {:.3} mm)",
+            engrave.side.label(),
+            engrave.offset_mm,
+            engrave.passes,
+            if engrave.passes == 1 { "" } else { "es" },
+            engrave.stepover_mm
+        );
         for path in &paths {
             self.cut_path(
                 path,
@@ -713,6 +722,31 @@ mod tests {
         let program = generate_task_gcode(&project, &library, project.task(id).unwrap()).unwrap();
         assert_eq!(program.path_count, 1);
         assert!(program.text.contains("X10.000 Y8.000"));
+    }
+
+    #[test]
+    fn engrave_multiple_offset_passes_are_emitted() {
+        let (mut project, library, cutout_id) = project_with_outline();
+        let layer = project.task(cutout_id).unwrap().source_layer();
+        let tool = library.closest(crate::ToolKind::VBit, 0.2).unwrap();
+        let engrave_id = project.add_task(
+            "Engrave outline",
+            OperationKind::Engrave(EngraveOperation::new(layer, tool)),
+        );
+        let OperationKind::Engrave(engrave) = project.task_mut(engrave_id).unwrap().kind_mut()
+        else {
+            panic!("expected engrave task");
+        };
+        engrave.side = crate::EngraveSide::Outside;
+        engrave.offset_mm = 0.1;
+        engrave.passes = 3;
+        engrave.stepover_mm = 0.2;
+
+        let program =
+            generate_task_gcode(&project, &library, project.task(engrave_id).unwrap()).unwrap();
+        assert_eq!(program.path_count, 3);
+        assert!(program.text.contains("offset 0.100 mm, 3 passes"));
+        assert!(program.text.contains("X-0.100 Y-0.100"));
     }
 
     #[test]

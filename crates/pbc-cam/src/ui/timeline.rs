@@ -218,8 +218,11 @@ fn task_subtitle(app: &PbcCam, task: &pbc_cam_core::Task) -> String {
             cutout.depth_mm
         ),
         pbc_cam_core::OperationKind::Engrave(engrave) => format!(
-            "Engrave · {} · {:.2} mm deep{enabled}",
+            "Engrave · {} · {}p · {} {:.2} · {:.2} mm{enabled}",
             tool_label(app, task),
+            engrave.passes,
+            engrave.side.label(),
+            engrave.offset_mm,
             engrave.depth_mm
         ),
     }
