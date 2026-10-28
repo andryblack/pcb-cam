@@ -1,8 +1,8 @@
 //! Interactive 2D board canvas.
 
 use eframe::egui::{
-    Align2, Color32, CornerRadius, CursorIcon, FontId, Painter, Pos2, Rect, Response, Sense, Shape,
-    Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
+    Align2, Color32, CornerRadius, CursorIcon, FontId, Mesh, Painter, Pos2, Rect, Response, Sense,
+    Shape, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
 };
 use pbc_cam_core::{
     Aperture, ApertureHole, ApertureShape, Bounds, ContourSide, ExcellonLayer, GerberLayer, Layer,
@@ -211,21 +211,70 @@ fn draw_gerber(
                 );
             }
             Primitive::Region { contours, .. } => {
-                for contour in contours {
-                    let points: Vec<Pos2> = contour
-                        .points
-                        .iter()
-                        .map(|point| {
-                            view.world_to_screen(pos2(point.x as f32, point.y as f32), rect)
-                        })
-                        .collect();
-                    if points.len() >= 3 {
-                        painter.add(Shape::convex_polygon(points, primitive_color, Stroke::NONE));
-                    }
-                }
+                draw_region(painter, rect, view, contours, primitive_color);
             }
         }
     }
+}
+
+fn draw_region(painter: &Painter, rect: Rect, view: &ViewState, contours: &[Path], color: Color32) {
+    let mut polygons: Vec<Vec<Pos2>> = contours
+        .iter()
+        .filter_map(|contour| {
+            let mut points: Vec<Pos2> = contour
+                .points
+                .iter()
+                .map(|point| view.world_to_screen(pos2(point.x as f32, point.y as f32), rect))
+                .collect();
+            if points.len() > 1 && points.first() == points.last() {
+                points.pop();
+            }
+            (points.len() >= 3).then_some(points)
+        })
+        .collect();
+    if polygons.is_empty() {
+        return;
+    }
+
+    // Gerber regions may contain an outer contour and holes. Earcut expects
+    // the outer ring first; use the largest ring as the outer one.
+    polygons.sort_by(|a, b| polygon_area(b).abs().total_cmp(&polygon_area(a).abs()));
+    let mut data: Vec<f32> = Vec::new();
+    let mut holes: Vec<usize> = Vec::new();
+    for (index, polygon) in polygons.iter().enumerate() {
+        if index > 0 {
+            holes.push(data.len() / 2);
+        }
+        for point in polygon {
+            data.push(point.x);
+            data.push(point.y);
+        }
+    }
+    let Ok(indices) = earcutr::earcut(&data, &holes, 2) else {
+        return;
+    };
+    if indices.is_empty() {
+        return;
+    }
+
+    let mut mesh = Mesh::default();
+    for [x, y] in data.as_chunks::<2>().0 {
+        mesh.colored_vertex(pos2(*x, *y), color);
+    }
+    for [a, b, c] in indices.as_chunks::<3>().0 {
+        mesh.add_triangle(*a as u32, *b as u32, *c as u32);
+    }
+    painter.add(Shape::mesh(mesh));
+}
+
+fn polygon_area(points: &[Pos2]) -> f32 {
+    let mut area = 0.0;
+    for index in 0..points.len() {
+        let a = points[index];
+        let b = points[(index + 1) % points.len()];
+        area += a.x * b.y - b.x * a.y;
+    }
+    area * 0.5
 }
 
 fn draw_flash(

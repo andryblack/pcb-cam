@@ -39,6 +39,7 @@ Implemented:
   - fixed-format and decimal coordinates
   - tool definitions, drill hits and `G85` slots
 - Canvas layer rendering with fit-to-project, pan/zoom, grid, axes and scale bar
+- Correct triangulation of concave Gerber regions (earcutr) instead of convex fan fill
 - Layer browser with visibility and selection
 - **Source tool browser**:
   - Excellon tools with number, diameter and object count
@@ -96,7 +97,7 @@ Next:
 - Import geometry is flattened to millimetres at load time; the source path is kept on the layer.
 - Gerber step-and-repeat, aperture blocks and negative image polarity are not fully supported yet; import reports warnings instead of failing.
 - Gerber source apertures are listed, but currently only **drilling tasks** use source tools as filters. Contour-cut and engraving tasks process the whole layer.
-- Regions are drawn as polygons; complex holes cut through a region are not boolean-subtracted.
+- Gerber regions are triangulated; regions with multiple nested contours/islands may not be fully supported yet.
 - Contour offsets use mitred joins without a full self-intersection cleanup.
 - Engraving follows outlines and paths; filled/hardened area clearing is not implemented.
 - Slots narrower than the machining tool are rejected; wider slots are routed on the centreline, which may not clear the full slot width.
