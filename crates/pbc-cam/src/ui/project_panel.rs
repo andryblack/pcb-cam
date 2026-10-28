@@ -27,6 +27,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
             ui.add_space(6.0);
 
             egui::ScrollArea::vertical()
+                .id_salt("browser_scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     project_card(ui, app);

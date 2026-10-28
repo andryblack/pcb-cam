@@ -53,7 +53,8 @@ Implemented:
   - **Drilling** — source-hole filter, machining tool, depth, retract, feed, plunge, dwell, helical step-down, spindle
   - **Contour cut** — machining tool, outside/inside/on-line offset, depth, retract, feed, plunge, spindle
   - **Engraving** — machining tool, depth, retract, feed, plunge, spindle
-- Task timeline with selection, enable/disable, creation, reordering and a type-specific parameter editor
+- Task timeline with selection, enable/disable, creation, reordering and online editing in the inspector
+- Selected-task canvas overlay in red: drill/slot positions, contour-cut offset toolpath or engraving paths
 - **Helical interpolation** for holes larger than the selected end mill/V-bit. A 1.0 mm end mill can machine a 1.5 mm hole with a helical path; a drill bit is rejected because it cannot side-cut.
 - G-code export:
   - selected task only
@@ -158,8 +159,11 @@ The script builds a release binary, assembles `PBC-CAM.app` with the app icon an
    - **Drilling** needs an Excellon layer.
    - **Contour cut** needs a Gerber layer with closed contours.
    - **Engraving** needs a Gerber layer with paths.
-6. Open the task editor. Choose one **machining tool**, and for drilling check
-   the **source tools** (hole groups) that this task should machine.
+6. Select the task. Edit it directly in the inspector: choose one
+   **machining tool**, check the **source tools** for drilling, and change
+   depths/feeds. Changes are applied online; there is no separate task-edit dialog.
+   While selected, the task is drawn in red on the canvas — drilling positions
+   for drill tasks, or the offset/engraving trajectory for milling tasks.
 7. Export:
    - **File → Export Selected Task G-code…** or the inspector's **Export task G-code…** for one task.
    - **File → Export All Tasks G-code…** or the timeline's **Export all G-code** for the combined program with tool changes.

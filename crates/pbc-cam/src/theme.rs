@@ -39,6 +39,8 @@ pub(crate) const COPPER_DIM: Color32 = Color32::from_rgb(124, 87, 52);
 pub(crate) const ACCENT: Color32 = Color32::from_rgb(104, 204, 169);
 /// Error text and status dot.
 pub(crate) const ERROR: Color32 = Color32::from_rgb(233, 112, 112);
+/// Selected task toolpath/position overlay on the canvas.
+pub(crate) const TASK_OVERLAY: Color32 = Color32::from_rgb(255, 82, 82);
 /// Minor canvas grid lines.
 pub(crate) const GRID_MINOR: Color32 = Color32::from_rgb(18, 24, 31);
 /// Major canvas grid lines.

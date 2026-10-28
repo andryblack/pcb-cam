@@ -151,13 +151,6 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
 
                     let selected_task = matches!(app.selection, Some(Selection::Task(_)));
                     ui.separator();
-                    let edit = ui.add_enabled(selected_task, Button::new("Edit Selected Task…"));
-                    if edit.clicked() {
-                        app.open_task_editor();
-                        ui.close();
-                    }
-
-                    ui.separator();
                     let export_task =
                         ui.add_enabled(selected_task, Button::new("Export Selected Task G-code…"));
                     if export_task.clicked() {

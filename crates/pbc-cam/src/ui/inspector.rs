@@ -1,9 +1,11 @@
 //! Right-hand inspector panel.
 
 use eframe::egui::{self, Align, Button, Frame, Layout, Margin, RichText, Stroke, Ui, vec2};
-use pbc_cam_core::{LayerGeometry, LayerId, OperationId, OperationKind, ToolId, Unit};
+use pbc_cam_core::{
+    ContourSide, LayerGeometry, LayerId, OperationId, OperationKind, Tool, ToolId, Unit,
+};
 
-use crate::app::{PbcCam, Selection};
+use crate::app::{PbcCam, Selection, TaskDraftKind};
 use crate::theme;
 use crate::ui::widgets;
 use crate::view;
@@ -15,7 +17,6 @@ enum InspectorAction {
     Remove,
     Fit,
     ExportTask,
-    EditTask,
     EditTool,
     SetUnits(Unit),
     MoveTask(OperationId, usize),
@@ -34,6 +35,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         .stroke(Stroke::new(1.0, theme::BORDER));
 
     let mut action = None;
+    app.sync_task_draft();
 
     egui::Panel::right("inspector")
         .default_size(300.0)
@@ -47,6 +49,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
             ui.add_space(6.0);
 
             egui::ScrollArea::vertical()
+                .id_salt("inspector_scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     match app.selection {
@@ -85,7 +88,6 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         Some(InspectorAction::Remove) => app.remove_selection(),
         Some(InspectorAction::Fit) => app.fit_view(),
         Some(InspectorAction::ExportTask) => app.export_task_gcode_dialog(),
-        Some(InspectorAction::EditTask) => app.open_task_editor(),
         Some(InspectorAction::EditTool) => app.open_tool_editor(),
         Some(InspectorAction::SetUnits(units)) => app.set_units(units),
         Some(InspectorAction::MoveTask(id, target)) => {
@@ -314,27 +316,39 @@ fn tool_details(ui: &mut Ui, app: &PbcCam, id: ToolId, action: &mut Option<Inspe
     }
 }
 
-fn task_details(ui: &mut Ui, app: &PbcCam, id: OperationId, action: &mut Option<InspectorAction>) {
+fn task_details(
+    ui: &mut Ui,
+    app: &mut PbcCam,
+    id: OperationId,
+    action: &mut Option<InspectorAction>,
+) {
     let Some(task) = app.project().task(id).cloned() else {
         return;
     };
     let mut enabled = task.enabled();
-    let layer_name = app
+    let layer_name = app.project().layer(task.source_layer()).map_or_else(
+        || "Missing layer".to_owned(),
+        |layer| layer.name().to_owned(),
+    );
+    let tools = app.session.tool_library().tools().to_vec();
+    let source_tools: Vec<pbc_cam_core::SourceToolInfo> = app
         .project()
         .layer(task.source_layer())
-        .map_or("Missing layer", |layer| layer.name());
-    let tool = app.session.tool_library().tool(task.tool());
-    let tool_text = tool.map_or_else(|| "Missing tool".to_owned(), |tool| tool.name().to_owned());
+        .map(|layer| layer.source_tools())
+        .unwrap_or_default();
+    let selected_counts = match task.kind() {
+        OperationKind::Drill(drill) => filtered_counts(app, &task, &drill.source_tools),
+        _ => (0, 0),
+    };
+    let Some(draft) = app.task_draft.as_mut() else {
+        return;
+    };
+    let mut commit = false;
 
     widgets::card_frame().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(task.name())
-                    .size(13.0)
-                    .strong()
-                    .color(theme::TEXT),
-            );
+            ui.label(RichText::new("Task").size(13.0).strong().color(theme::TEXT));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 widgets::pill(ui, task.kind_label(), task_color(task.kind()));
             });
@@ -344,57 +358,165 @@ fn task_details(ui: &mut Ui, app: &PbcCam, id: OperationId, action: &mut Option<
         if ui.checkbox(&mut enabled, "Enabled").changed() {
             *action = Some(InspectorAction::ToggleTask(id, enabled));
         }
-        widgets::field_row(ui, "Source", layer_name);
-        widgets::field_row(ui, "Machining tool", &tool_text);
 
-        match task.kind() {
-            OperationKind::Drill(drill) => {
-                let (holes, slots) = drill_counts(app, drill);
-                let filter = source_filter_label(app, drill);
-                widgets::field_row(ui, "Source tools", &filter);
-                widgets::field_row(ui, "Holes", &holes.to_string());
-                widgets::field_row(ui, "Slots", &slots.to_string());
-                widgets::field_row(ui, "Depth", &format!("{:.2} mm", drill.depth_mm));
-                widgets::field_row(ui, "Retract", &format!("{:.2} mm", drill.retract_mm));
-                widgets::field_row(ui, "Feed", &format!("{:.0} mm/min", drill.feed_mm_min));
-                widgets::field_row(ui, "Plunge", &format!("{:.0} mm/min", drill.plunge_mm_min));
-                widgets::field_row(ui, "Dwell", &format!("{:.2} s", drill.dwell_s));
-                widgets::field_row(ui, "Step-down", &format!("{:.2} mm", drill.stepdown_mm));
-                widgets::field_row(ui, "Spindle", &format!("{} rpm", drill.spindle_rpm));
-            }
-            OperationKind::Cutout(cutout) => {
-                widgets::field_row(ui, "Side", cutout.side.label());
-                widgets::field_row(ui, "Depth", &format!("{:.2} mm", cutout.depth_mm));
-                widgets::field_row(ui, "Retract", &format!("{:.2} mm", cutout.retract_mm));
-                widgets::field_row(ui, "Feed", &format!("{:.0} mm/min", cutout.feed_mm_min));
-                widgets::field_row(ui, "Plunge", &format!("{:.0} mm/min", cutout.plunge_mm_min));
-                widgets::field_row(ui, "Spindle", &format!("{} rpm", cutout.spindle_rpm));
-            }
-            OperationKind::Engrave(engrave) => {
-                widgets::field_row(ui, "Depth", &format!("{:.2} mm", engrave.depth_mm));
-                widgets::field_row(ui, "Retract", &format!("{:.2} mm", engrave.retract_mm));
-                widgets::field_row(ui, "Feed", &format!("{:.0} mm/min", engrave.feed_mm_min));
+        ui.add_space(4.0);
+        ui.label(RichText::new("Name").size(10.5).color(theme::TEXT_MUTED));
+        let name = ui.add(
+            egui::TextEdit::singleline(&mut draft.name)
+                .desired_width(f32::INFINITY)
+                .font(egui::TextStyle::Small),
+        );
+        if name.lost_focus() && name.changed() {
+            commit = true;
+        }
+
+        ui.add_space(6.0);
+        widgets::field_row(ui, "Source", &layer_name);
+
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Machining tool")
+                .size(10.5)
+                .color(theme::TEXT_MUTED),
+        );
+        if tool_selector(ui, &tools, &mut draft.tool) {
+            commit = true;
+        }
+
+        match &mut draft.kind {
+            TaskDraftKind::Drill {
+                source_tools: selected,
+                depth,
+                retract,
+                feed,
+                plunge,
+                dwell,
+                stepdown,
+                spindle,
+            } => {
+                ui.add_space(8.0);
+                widgets::section_label(ui, "Source holes");
+                ui.add_space(3.0);
+                if source_tools.is_empty() {
+                    ui.label(
+                        RichText::new("The source layer has no tools.")
+                            .size(10.0)
+                            .color(theme::TEXT_FAINT),
+                    );
+                } else {
+                    for info in &source_tools {
+                        if let Some(number) = info.number {
+                            let mut checked = selected.contains(&number);
+                            if ui
+                                .checkbox(
+                                    &mut checked,
+                                    format!("{}  ({} obj)", info.label, info.count),
+                                )
+                                .changed()
+                            {
+                                if checked {
+                                    selected.insert(number);
+                                } else {
+                                    selected.remove(&number);
+                                }
+                                commit = true;
+                            }
+                        }
+                    }
+                    if selected.is_empty() {
+                        ui.label(
+                            RichText::new("Select at least one source tool.")
+                                .size(10.0)
+                                .color(theme::ERROR),
+                        );
+                    }
+                }
+                let (holes, slots) = selected_counts;
                 widgets::field_row(
                     ui,
-                    "Plunge",
-                    &format!("{:.0} mm/min", engrave.plunge_mm_min),
+                    "Selected",
+                    &format!(
+                        "{} hole{} · {} slot{}",
+                        holes,
+                        if holes == 1 { "" } else { "s" },
+                        slots,
+                        if slots == 1 { "" } else { "s" }
+                    ),
                 );
-                widgets::field_row(ui, "Spindle", &format!("{} rpm", engrave.spindle_rpm));
+
+                ui.add_space(8.0);
+                widgets::section_label(ui, "Cut parameters");
+                ui.add_space(3.0);
+                commit |= inline_f64(ui, "Depth", depth, 0.01..=50.0, " mm");
+                commit |= inline_f64(ui, "Retract", retract, 0.1..=100.0, " mm");
+                commit |= inline_f64(ui, "Feed", feed, 1.0..=10_000.0, " mm/min");
+                commit |= inline_f64(ui, "Plunge", plunge, 1.0..=5_000.0, " mm/min");
+                commit |= inline_f64(ui, "Dwell", dwell, 0.0..=10.0, " s");
+                commit |= inline_f64(ui, "Helical step", stepdown, 0.05..=10.0, " mm");
+                commit |= inline_u32(ui, "Spindle", spindle, 0..=60_000, " rpm");
+            }
+            TaskDraftKind::Cutout {
+                side,
+                depth,
+                retract,
+                feed,
+                plunge,
+                spindle,
+            } => {
+                ui.add_space(8.0);
+                widgets::section_label(ui, "Cutter");
+                ui.add_space(3.0);
+                let mut changed_side = false;
+                ui.horizontal(|ui| {
+                    for candidate in [
+                        ContourSide::Outside,
+                        ContourSide::Inside,
+                        ContourSide::OnLine,
+                    ] {
+                        if ui
+                            .add(Button::selectable(*side == candidate, candidate.label()))
+                            .clicked()
+                        {
+                            *side = candidate;
+                            changed_side = true;
+                        }
+                    }
+                });
+                commit |= changed_side;
+
+                ui.add_space(8.0);
+                widgets::section_label(ui, "Cut parameters");
+                ui.add_space(3.0);
+                commit |= inline_f64(ui, "Depth", depth, 0.01..=50.0, " mm");
+                commit |= inline_f64(ui, "Retract", retract, 0.1..=100.0, " mm");
+                commit |= inline_f64(ui, "Feed", feed, 1.0..=10_000.0, " mm/min");
+                commit |= inline_f64(ui, "Plunge", plunge, 1.0..=5_000.0, " mm/min");
+                commit |= inline_u32(ui, "Spindle", spindle, 0..=60_000, " rpm");
+            }
+            TaskDraftKind::Engrave {
+                depth,
+                retract,
+                feed,
+                plunge,
+                spindle,
+            } => {
+                ui.add_space(8.0);
+                widgets::section_label(ui, "Cut parameters");
+                ui.add_space(3.0);
+                commit |= inline_f64(ui, "Depth", depth, 0.01..=50.0, " mm");
+                commit |= inline_f64(ui, "Retract", retract, 0.1..=100.0, " mm");
+                commit |= inline_f64(ui, "Feed", feed, 1.0..=10_000.0, " mm/min");
+                commit |= inline_f64(ui, "Plunge", plunge, 1.0..=5_000.0, " mm/min");
+                commit |= inline_u32(ui, "Spindle", spindle, 0..=60_000, " rpm");
             }
         }
     });
 
-    ui.add_space(10.0);
-    if ui
-        .add_sized(
-            vec2(ui.available_width(), 26.0),
-            Button::new(RichText::new("Edit task…").size(11.0)),
-        )
-        .clicked()
-    {
-        *action = Some(InspectorAction::EditTask);
+    if commit {
+        app.commit_task_draft();
     }
-    ui.add_space(4.0);
+
+    ui.add_space(10.0);
     let export = ui.add_enabled(
         enabled,
         Button::new(RichText::new("Export task G-code…").size(11.0)),
@@ -405,6 +527,7 @@ fn task_details(ui: &mut Ui, app: &PbcCam, id: OperationId, action: &mut Option<
     if !enabled {
         export.on_disabled_hover_text("Enable the task first");
     }
+
     ui.add_space(4.0);
     if ui
         .add_sized(
@@ -442,49 +565,113 @@ fn task_details(ui: &mut Ui, app: &PbcCam, id: OperationId, action: &mut Option<
     });
 }
 
-fn source_filter_label(app: &PbcCam, drill: &pbc_cam_core::DrillTask) -> String {
-    let Some(layer) = app.project().layer(drill.layer) else {
-        return "missing source".to_owned();
-    };
-    if drill.source_tools.is_empty() {
-        return "all".to_owned();
-    }
-    let labels: Vec<String> = layer
-        .source_tools()
-        .into_iter()
-        .filter(|tool| {
-            tool.number
-                .is_some_and(|number| drill.source_tools.contains(&number))
-        })
-        .map(|tool| format!("T{}", tool.number.unwrap_or_default()))
-        .collect();
-    if labels.is_empty() {
-        "none".to_owned()
-    } else {
-        labels.join(", ")
-    }
+fn tool_selector(ui: &mut Ui, tools: &[Tool], selected: &mut ToolId) -> bool {
+    let selected_text = tools
+        .iter()
+        .find(|tool| tool.id() == *selected)
+        .map_or("Missing tool".to_owned(), |tool| {
+            format!("{} · Ø{:.2} mm", tool.name(), tool.diameter_mm())
+        });
+    let before = *selected;
+    egui::ComboBox::from_id_salt("inspector_task_tool")
+        .selected_text(selected_text)
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            for tool in tools {
+                ui.selectable_value(
+                    selected,
+                    tool.id(),
+                    format!(
+                        "{} · {} · Ø{:.2} mm",
+                        tool.name(),
+                        tool.kind().label(),
+                        tool.diameter_mm()
+                    ),
+                );
+            }
+        });
+    *selected != before
 }
 
-fn drill_counts(app: &PbcCam, drill: &pbc_cam_core::DrillTask) -> (usize, usize) {
-    let selected = |tool: u32| drill.source_tools.is_empty() || drill.source_tools.contains(&tool);
-    app.project()
-        .layer(drill.layer)
-        .and_then(|layer| match layer.geometry() {
-            LayerGeometry::Excellon(excellon) => Some((
-                excellon
-                    .holes
-                    .iter()
-                    .filter(|hole| selected(hole.tool))
-                    .count(),
-                excellon
-                    .slots
-                    .iter()
-                    .filter(|slot| selected(slot.tool))
-                    .count(),
-            )),
-            LayerGeometry::Gerber(_) => None,
-        })
-        .unwrap_or((0, 0))
+fn inline_f64(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut f64,
+    range: std::ops::RangeInclusive<f64>,
+    suffix: &str,
+) -> bool {
+    let mut commit = false;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).size(10.5).color(theme::TEXT_MUTED));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let response = ui.add(
+                egui::DragValue::new(value)
+                    .range(range)
+                    .speed(0.05)
+                    .max_decimals(3)
+                    .suffix(suffix),
+            );
+            commit = response.drag_stopped()
+                || (response.changed() && response.lost_focus())
+                || (response.changed()
+                    && response.hovered()
+                    && ui.input(|input| input.pointer.any_released()));
+        });
+    });
+    commit
+}
+
+fn inline_u32(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut u32,
+    range: std::ops::RangeInclusive<u32>,
+    suffix: &str,
+) -> bool {
+    let mut commit = false;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).size(10.5).color(theme::TEXT_MUTED));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let response = ui.add(
+                egui::DragValue::new(value)
+                    .range(range)
+                    .speed(100)
+                    .suffix(suffix),
+            );
+            commit = response.drag_stopped()
+                || (response.changed() && response.lost_focus())
+                || (response.changed()
+                    && response.hovered()
+                    && ui.input(|input| input.pointer.any_released()));
+        });
+    });
+    commit
+}
+
+fn filtered_counts(
+    app: &PbcCam,
+    task: &pbc_cam_core::Task,
+    selected: &std::collections::BTreeSet<u32>,
+) -> (usize, usize) {
+    let Some(layer) = app.project().layer(task.source_layer()) else {
+        return (0, 0);
+    };
+    let LayerGeometry::Excellon(excellon) = layer.geometry() else {
+        return (0, 0);
+    };
+    let include = |tool: u32| selected.contains(&tool);
+    (
+        excellon
+            .holes
+            .iter()
+            .filter(|hole| include(hole.tool))
+            .count(),
+        excellon
+            .slots
+            .iter()
+            .filter(|slot| include(slot.tool))
+            .count(),
+    )
 }
 
 fn task_color(kind: &OperationKind) -> egui::Color32 {

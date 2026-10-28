@@ -5,8 +5,8 @@ use eframe::egui::{
     Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
 };
 use pbc_cam_core::{
-    Aperture, ApertureHole, ApertureShape, Bounds, ExcellonLayer, GerberLayer, Layer,
-    LayerGeometry, Polarity, Primitive,
+    Aperture, ApertureHole, ApertureShape, Bounds, ContourSide, ExcellonLayer, GerberLayer, Layer,
+    LayerGeometry, OperationKind, Path, Polarity, Primitive, offset_closed_path,
 };
 
 use crate::app::{PbcCam, Selection};
@@ -69,6 +69,8 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
     {
         draw_layer(&painter, rect, &app.view, layer, true);
     }
+
+    draw_task_overlay(&painter, rect, app);
 
     let empty_card = if app.project().is_empty() {
         Some(draw_empty_state(&painter, rect))
@@ -436,6 +438,147 @@ fn draw_axes(painter: &Painter, rect: Rect, view: &ViewState) {
     painter.circle_filled(origin, 4.5, theme::CANVAS);
     painter.circle_stroke(origin, 4.5, Stroke::new(1.2, theme::COPPER));
     painter.circle_filled(origin, 1.6, theme::COPPER_BRIGHT);
+}
+
+fn draw_task_overlay(painter: &Painter, rect: Rect, app: &PbcCam) {
+    let Some(Selection::Task(id)) = app.selection else {
+        return;
+    };
+    let Some(task) = app.project().task(id) else {
+        return;
+    };
+    let color = if task.enabled() {
+        theme::TASK_OVERLAY
+    } else {
+        Color32::from_rgba_unmultiplied(255, 82, 82, 110)
+    };
+    let Some(layer) = app.project().layer(task.source_layer()) else {
+        return;
+    };
+
+    match task.kind() {
+        OperationKind::Drill(drill) => {
+            let LayerGeometry::Excellon(excellon) = layer.geometry() else {
+                return;
+            };
+            let selected =
+                |tool: u32| drill.source_tools.is_empty() || drill.source_tools.contains(&tool);
+            for hole in &excellon.holes {
+                if selected(hole.tool) {
+                    draw_drill_position(
+                        painter,
+                        rect,
+                        &app.view,
+                        hole.position.x,
+                        hole.position.y,
+                        color,
+                    );
+                }
+            }
+            for slot in &excellon.slots {
+                if !selected(slot.tool) {
+                    continue;
+                }
+                let start = app
+                    .view
+                    .world_to_screen(pos2(slot.start.x as f32, slot.start.y as f32), rect);
+                let end = app
+                    .view
+                    .world_to_screen(pos2(slot.end.x as f32, slot.end.y as f32), rect);
+                if !rect.expand(30.0).contains(start) && !rect.expand(30.0).contains(end) {
+                    continue;
+                }
+                painter.line_segment(
+                    [start, end],
+                    Stroke::new(4.0, Color32::from_rgba_unmultiplied(0, 0, 0, 150)),
+                );
+                painter.line_segment([start, end], Stroke::new(1.8, color));
+                draw_drill_cross(painter, start, color);
+                draw_drill_cross(painter, end, color);
+            }
+        }
+        OperationKind::Cutout(cutout) => {
+            let LayerGeometry::Gerber(gerber) = layer.geometry() else {
+                return;
+            };
+            let Some(tool) = app.session.tool_library().tool(cutout.tool) else {
+                return;
+            };
+            let distance = match cutout.side {
+                ContourSide::Outside => tool.diameter_mm() * 0.5,
+                ContourSide::Inside => -tool.diameter_mm() * 0.5,
+                ContourSide::OnLine => 0.0,
+            };
+            for contour in gerber.closed_contours() {
+                if let Some(path) = offset_closed_path(&contour, distance) {
+                    draw_task_path(painter, rect, &app.view, &path, color);
+                }
+            }
+        }
+        OperationKind::Engrave(_) => {
+            let LayerGeometry::Gerber(gerber) = layer.geometry() else {
+                return;
+            };
+            for path in gerber.engraving_paths() {
+                draw_task_path(painter, rect, &app.view, &path, color);
+            }
+        }
+    }
+}
+
+fn draw_task_path(painter: &Painter, rect: Rect, view: &ViewState, path: &Path, color: Color32) {
+    let mut points: Vec<Pos2> = path
+        .points
+        .iter()
+        .map(|point| view.world_to_screen(pos2(point.x as f32, point.y as f32), rect))
+        .collect();
+    if path.closed
+        && let Some(first) = points.first().copied()
+    {
+        points.push(first);
+    }
+    if points.len() < 2 {
+        return;
+    }
+    painter.add(Shape::line(
+        points.clone(),
+        Stroke::new(4.5, Color32::from_rgba_unmultiplied(0, 0, 0, 165)),
+    ));
+    painter.add(Shape::line(points, Stroke::new(1.8, color)));
+}
+
+fn draw_drill_position(
+    painter: &Painter,
+    rect: Rect,
+    view: &ViewState,
+    x: f64,
+    y: f64,
+    color: Color32,
+) {
+    let center = view.world_to_screen(pos2(x as f32, y as f32), rect);
+    if !rect.expand(30.0).contains(center) {
+        return;
+    }
+    painter.circle_stroke(center, 5.0, Stroke::new(1.4, color));
+    draw_drill_cross(painter, center, color);
+}
+
+fn draw_drill_cross(painter: &Painter, center: Pos2, color: Color32) {
+    let arm = 8.0;
+    painter.line_segment(
+        [
+            pos2(center.x - arm, center.y),
+            pos2(center.x + arm, center.y),
+        ],
+        Stroke::new(1.4, color),
+    );
+    painter.line_segment(
+        [
+            pos2(center.x, center.y - arm),
+            pos2(center.x, center.y + arm),
+        ],
+        Stroke::new(1.4, color),
+    );
 }
 
 fn draw_empty_state(painter: &Painter, rect: Rect) -> Rect {
