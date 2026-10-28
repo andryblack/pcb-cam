@@ -27,6 +27,8 @@ pub enum ToolKind {
     EndMill,
     /// V-bit or engraving cutter.
     VBit,
+    /// Spot drill / countersink used for centre punching.
+    Cone,
 }
 
 impl ToolKind {
@@ -36,6 +38,7 @@ impl ToolKind {
             Self::Drill => "Drill",
             Self::EndMill => "End mill",
             Self::VBit => "V-bit",
+            Self::Cone => "Cone",
         }
     }
 
@@ -45,6 +48,7 @@ impl ToolKind {
             Self::Drill => "drill",
             Self::EndMill => "end_mill",
             Self::VBit => "v_bit",
+            Self::Cone => "cone",
         }
     }
 
@@ -54,6 +58,7 @@ impl ToolKind {
             "drill" => Ok(Self::Drill),
             "end_mill" | "endmill" => Ok(Self::EndMill),
             "v_bit" | "vbit" | "engraver" => Ok(Self::VBit),
+            "cone" | "spot" | "spot_drill" | "countersink" => Ok(Self::Cone),
             other => Err(format!("unknown tool kind `{other}`")),
         }
     }
@@ -178,6 +183,7 @@ impl Default for ToolLibrary {
             tools: Vec::new(),
             next_id: 1,
         };
+        library.add_default("Cone 6.00 mm", ToolKind::Cone, 6.00, 200.0, 80.0, 12_000);
         library.add_default("Drill 0.30 mm", ToolKind::Drill, 0.30, 80.0, 50.0, 20_000);
         library.add_default("Drill 0.80 mm", ToolKind::Drill, 0.80, 120.0, 80.0, 18_000);
         library.add_default("Drill 1.00 mm", ToolKind::Drill, 1.00, 150.0, 100.0, 15_000);
@@ -345,6 +351,7 @@ mod tests {
         assert!(library.first_of_kind(ToolKind::Drill).is_some());
         assert!(library.first_of_kind(ToolKind::EndMill).is_some());
         assert!(library.first_of_kind(ToolKind::VBit).is_some());
+        assert!(library.first_of_kind(ToolKind::Cone).is_some());
     }
 
     #[test]

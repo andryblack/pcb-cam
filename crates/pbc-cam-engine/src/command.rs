@@ -197,6 +197,15 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         enabled: Some(crate::commands::add_drill_enabled),
     },
     CommandSpec {
+        id: "task.add_spot_drill",
+        label: "Add spot drilling task",
+        description: "Create a spot-drilling task for selected Excellon hole centres.",
+        shortcut: None,
+        undoable: true,
+        run: crate::commands::operation_add_spot_drill,
+        enabled: Some(crate::commands::add_spot_drill_enabled),
+    },
+    CommandSpec {
         id: "task.add_cutout",
         label: "Add contour cut task",
         description: "Create a task cutting along closed Gerber contours.",
@@ -213,6 +222,15 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         undoable: true,
         run: crate::commands::operation_add_engrave,
         enabled: Some(crate::commands::add_engrave_enabled),
+    },
+    CommandSpec {
+        id: "task.update_spot_drill",
+        label: "Update spot drilling task",
+        description: "Change the source holes, tool, depth or feeds of a spot-drilling task.",
+        shortcut: None,
+        undoable: true,
+        run: crate::commands::operation_update_spot_drill,
+        enabled: None,
     },
     CommandSpec {
         id: "task.update_cutout",

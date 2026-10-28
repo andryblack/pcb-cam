@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use pbc_cam_core::{
     ContourSide, CutoutOperation, DrillOperation, EngraveOperation, EngraveSide, LayerGeometry,
-    LayerId, OperationId, OperationKind, Project, ToolId, ToolKind, UNTITLED_PROJECT,
-    generate_all_gcode, generate_task_gcode, parse_excellon, parse_gerber,
+    LayerId, OperationId, OperationKind, Project, SpotDrillOperation, ToolId, ToolKind,
+    UNTITLED_PROJECT, generate_all_gcode, generate_task_gcode, parse_excellon, parse_gerber,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -82,6 +82,34 @@ struct OperationAddDrillParams {
     plunge: Option<f64>,
     dwell: Option<f64>,
     stepdown: Option<f64>,
+    spindle: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperationAddSpotDrillParams {
+    layer: u64,
+    name: Option<String>,
+    tool: Option<u64>,
+    source_tools: Option<Vec<u32>>,
+    depth: Option<f64>,
+    retract: Option<f64>,
+    feed: Option<f64>,
+    plunge: Option<f64>,
+    dwell: Option<f64>,
+    spindle: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperationUpdateSpotDrillParams {
+    id: u64,
+    name: Option<String>,
+    tool: Option<u64>,
+    source_tools: Option<Vec<u32>>,
+    depth: Option<f64>,
+    retract: Option<f64>,
+    feed: Option<f64>,
+    plunge: Option<f64>,
+    dwell: Option<f64>,
     spindle: Option<u32>,
 }
 
@@ -377,6 +405,16 @@ pub(crate) fn add_drill_enabled(session: &Session) -> Result<(), String> {
     match layer {
         Some(_) => Ok(()),
         None => Err("import an Excellon layer with drills first".into()),
+    }
+}
+
+pub(crate) fn add_spot_drill_enabled(session: &Session) -> Result<(), String> {
+    if session.project().layers().iter().any(|layer| {
+        matches!(layer.geometry(), LayerGeometry::Excellon(excellon) if !excellon.holes.is_empty())
+    }) {
+        Ok(())
+    } else {
+        Err("import an Excellon layer with holes first".into())
     }
 }
 
@@ -924,6 +962,155 @@ pub(crate) fn redo(session: &mut Session, _params: &Value) -> Result<Value, Stri
     }))
 }
 
+pub(crate) fn operation_add_spot_drill(
+    session: &mut Session,
+    params: &Value,
+) -> Result<Value, String> {
+    let params: OperationAddSpotDrillParams = parse_params(params)?;
+    let layer_id = LayerId::new(params.layer);
+    let (layer_name, sources) = {
+        let layer = session
+            .project()
+            .layer(layer_id)
+            .ok_or_else(|| format!("layer {} does not exist", params.layer))?;
+        let LayerGeometry::Excellon(excellon) = layer.geometry() else {
+            return Err("spot drilling requires an Excellon layer".into());
+        };
+        if excellon.holes.is_empty() {
+            return Err("the selected Excellon layer has no holes".into());
+        }
+        let mut sources: Vec<(u32, f64)> = excellon
+            .holes
+            .iter()
+            .map(|hole| (hole.tool, hole.diameter_mm))
+            .collect();
+        sources.sort_by_key(|(number, _)| *number);
+        sources.dedup_by_key(|(number, _)| *number);
+        (layer.name().to_owned(), sources)
+    };
+
+    let filter: BTreeSet<u32> = match params.source_tools {
+        Some(list) => list.into_iter().collect(),
+        // Spot drilling has no diameter constraint, so all holes are useful
+        // by default. The user can still deselect source tools.
+        None => BTreeSet::new(),
+    };
+    let selected = session
+        .project()
+        .layer(layer_id)
+        .and_then(|layer| match layer.geometry() {
+            LayerGeometry::Excellon(excellon) => Some(
+                excellon
+                    .holes
+                    .iter()
+                    .filter(|hole| filter.is_empty() || filter.contains(&hole.tool))
+                    .count(),
+            ),
+            LayerGeometry::Gerber(_) => None,
+        })
+        .unwrap_or(0);
+    if selected == 0 {
+        return Err("the task filters out every source hole".into());
+    }
+
+    let tool = match params.tool {
+        Some(id) => require_tool(session, id)?,
+        None => *session
+            .tool_library()
+            .first_of_kind(ToolKind::Cone)
+            .as_ref()
+            .ok_or_else(|| "add a Cone tool to the tool library first".to_owned())?,
+    };
+    let tool_defaults = session
+        .tool_library()
+        .tool(tool)
+        .cloned()
+        .ok_or_else(|| "machining tool disappeared".to_owned())?;
+    let default_name = format!("Spot drill {layer_name}");
+    let name = params.name.unwrap_or(default_name);
+
+    let mut spot = SpotDrillOperation::new(layer_id, tool);
+    spot.source_tools = filter;
+    spot.feed_mm_min = tool_defaults.feed_mm_min();
+    spot.plunge_mm_min = tool_defaults.plunge_mm_min();
+    spot.spindle_rpm = tool_defaults.spindle_rpm();
+    if let Some(depth) = params.depth {
+        spot.depth_mm = depth;
+    }
+    if let Some(retract) = params.retract {
+        spot.retract_mm = retract;
+    }
+    if let Some(feed) = params.feed {
+        spot.feed_mm_min = feed;
+    }
+    if let Some(plunge) = params.plunge {
+        spot.plunge_mm_min = plunge;
+    }
+    if let Some(dwell) = params.dwell {
+        spot.dwell_s = dwell;
+    }
+    if let Some(spindle) = params.spindle {
+        spot.spindle_rpm = spindle;
+    }
+    spot.validate()?;
+    let id = session
+        .project_mut()
+        .add_task(name.clone(), OperationKind::SpotDrill(spot));
+    Ok(json!({
+        "id": id.value(),
+        "name": name,
+        "tool": tool.value(),
+        "source_tools": sources.iter().map(|(number, _)| *number).collect::<Vec<_>>(),
+    }))
+}
+
+pub(crate) fn operation_update_spot_drill(
+    session: &mut Session,
+    params: &Value,
+) -> Result<Value, String> {
+    let params: OperationUpdateSpotDrillParams = parse_params(params)?;
+    let tool = params
+        .tool
+        .map(|id| require_tool(session, id))
+        .transpose()?;
+    let task = session
+        .project_mut()
+        .task_mut(OperationId::new(params.id))
+        .ok_or_else(|| format!("task {} does not exist", params.id))?;
+    if let Some(name) = params.name {
+        task.set_name(name);
+    }
+    let OperationKind::SpotDrill(spot) = task.kind_mut() else {
+        return Err("task is not a spot-drilling task".into());
+    };
+    if let Some(tool) = tool {
+        spot.tool = tool;
+    }
+    if let Some(source_tools) = params.source_tools {
+        spot.source_tools = source_tools.into_iter().collect();
+    }
+    if let Some(depth) = params.depth {
+        spot.depth_mm = depth;
+    }
+    if let Some(retract) = params.retract {
+        spot.retract_mm = retract;
+    }
+    if let Some(feed) = params.feed {
+        spot.feed_mm_min = feed;
+    }
+    if let Some(plunge) = params.plunge {
+        spot.plunge_mm_min = plunge;
+    }
+    if let Some(dwell) = params.dwell {
+        spot.dwell_s = dwell;
+    }
+    if let Some(spindle) = params.spindle {
+        spot.spindle_rpm = spindle;
+    }
+    spot.validate()?;
+    Ok(json!({"id": params.id}))
+}
+
 fn parse_engrave_side(side: &str) -> Result<EngraveSide, String> {
     match side {
         "outside" => Ok(EngraveSide::Outside),
@@ -1129,6 +1316,49 @@ M30
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("X10.000 Y10.000"));
         assert!(text.contains("M30"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn spot_drill_uses_cone_and_hole_centres() {
+        let mut session = Session::new();
+        let import = session
+            .execute(
+                "file.import_excellon",
+                &json!({"content": EXCELLON, "name": "Drills"}),
+            )
+            .unwrap();
+        let layer = import["layer"].as_u64().unwrap();
+        let created = session
+            .execute(
+                "task.add_spot_drill",
+                &json!({"layer": layer, "depth": 0.4}),
+            )
+            .unwrap();
+        let task = session
+            .project()
+            .task(OperationId::new(created["id"].as_u64().unwrap()))
+            .unwrap();
+        let OperationKind::SpotDrill(spot) = task.kind() else {
+            panic!("expected spot-drill task");
+        };
+        assert_eq!(spot.depth_mm, 0.4);
+        assert_eq!(
+            session
+                .tool_library()
+                .tool(spot.tool)
+                .map(|tool| tool.kind()),
+            Some(ToolKind::Cone)
+        );
+
+        let path = std::env::temp_dir().join(format!("pbc-cam-spot-{}.nc", std::process::id()));
+        let exported = session
+            .execute("file.export_gcode", &json!({"path": path}))
+            .unwrap();
+        assert_eq!(exported["holes"], 2);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("G01 Z-0.400"));
+        assert!(!text.contains("G02"));
         let _ = std::fs::remove_file(path);
     }
 

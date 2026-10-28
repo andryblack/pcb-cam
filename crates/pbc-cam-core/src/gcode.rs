@@ -149,6 +149,7 @@ impl<'a> ProgramBuilder<'a> {
         let _ = writeln!(self.text, "({} - {})", task.kind_label(), task.name());
         match task.kind() {
             OperationKind::Drill(drill) => self.append_drill(task, drill)?,
+            OperationKind::SpotDrill(spot) => self.append_spot_drill(task, spot)?,
             OperationKind::Cutout(cutout) => self.append_cutout(task, cutout)?,
             OperationKind::Engrave(engrave) => self.append_engrave(task, engrave)?,
         }
@@ -225,6 +226,72 @@ impl<'a> ProgramBuilder<'a> {
 
         let _ = writeln!(self.text, "G00 Z{:.3}", drill.retract_mm);
         self.last_safe_z = drill.retract_mm;
+        Ok(())
+    }
+
+    fn append_spot_drill(
+        &mut self,
+        task: &Operation,
+        spot: &crate::SpotDrillOperation,
+    ) -> Result<(), String> {
+        let layer = self
+            .project
+            .layer(spot.layer)
+            .ok_or_else(|| "spot drill task layer no longer exists".to_owned())?;
+        let LayerGeometry::Excellon(excellon) = layer.geometry() else {
+            return Err("spot drilling requires an Excellon layer".into());
+        };
+        let selected_holes: Vec<&DrillHit> = excellon
+            .holes
+            .iter()
+            .filter(|hole| spot.source_tools.is_empty() || spot.source_tools.contains(&hole.tool))
+            .collect();
+        let skipped_slots = excellon
+            .slots
+            .iter()
+            .filter(|slot| spot.source_tools.is_empty() || spot.source_tools.contains(&slot.tool))
+            .count();
+        if selected_holes.is_empty() {
+            return Err(format!(
+                "task `{}` has no selected holes to spot-drill",
+                task.name()
+            ));
+        }
+        let tool = self.task_tool(task)?.clone();
+        self.select_tool(&tool, spot.retract_mm, spot.spindle_rpm)?;
+        let _ = writeln!(
+            self.text,
+            "(Source holes: {})",
+            source_tool_list(&spot.source_tools)
+        );
+        if skipped_slots > 0 {
+            let _ = writeln!(
+                self.text,
+                "({skipped_slots} selected slot{} skipped: spot drilling uses hole centres)",
+                if skipped_slots == 1 { "" } else { "s" }
+            );
+        }
+        let _ = writeln!(self.text, "G00 Z{:.3}", spot.retract_mm);
+
+        for hole in selected_holes {
+            let _ = writeln!(
+                self.text,
+                "G00 X{:.3} Y{:.3}",
+                hole.position.x, hole.position.y
+            );
+            let _ = writeln!(
+                self.text,
+                "G01 Z-{:.3} F{:.1}",
+                spot.depth_mm, spot.plunge_mm_min
+            );
+            if spot.dwell_s > 0.0 {
+                let _ = writeln!(self.text, "G04 P{:.2}", spot.dwell_s);
+            }
+            let _ = writeln!(self.text, "G00 Z{:.3}", spot.retract_mm);
+            self.hole_count += 1;
+        }
+        let _ = writeln!(self.text, "G00 Z{:.3}", spot.retract_mm);
+        self.last_safe_z = spot.retract_mm;
         Ok(())
     }
 
@@ -747,6 +814,30 @@ mod tests {
         assert_eq!(program.path_count, 3);
         assert!(program.text.contains("offset 0.100 mm, 3 passes"));
         assert!(program.text.contains("X-0.100 Y-0.100"));
+    }
+
+    #[test]
+    fn spot_drill_emits_centres_and_ignores_hole_diameters() {
+        let (mut project, library, _drill_id) = project_with_drills();
+        let layer = project
+            .tasks()
+            .first()
+            .map(|task| task.source_layer())
+            .unwrap();
+        let tool = library.closest(ToolKind::Cone, 6.0).unwrap();
+        let spot_id = project.add_task(
+            "Spot drill",
+            OperationKind::SpotDrill(crate::SpotDrillOperation::new(layer, tool)),
+        );
+        let program =
+            generate_task_gcode(&project, &library, project.task(spot_id).unwrap()).unwrap();
+        assert_eq!(program.hole_count, 2);
+        assert_eq!(program.slot_count, 0);
+        assert_eq!(program.helical_hole_count, 0);
+        assert!(program.text.contains("X10.000 Y10.000"));
+        assert!(program.text.contains("X20.000 Y10.000"));
+        assert!(program.text.contains("slot"));
+        assert!(!program.text.contains("G02"));
     }
 
     #[test]

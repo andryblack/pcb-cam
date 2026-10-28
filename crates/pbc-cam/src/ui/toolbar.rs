@@ -89,6 +89,12 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         app.add_drill_task();
                         ui.close();
                     }
+                    let spot =
+                        ui.add_enabled(app.can_add_spot_drill_task(), Button::new("Spot drill"));
+                    if spot.clicked() {
+                        app.add_spot_drill_task();
+                        ui.close();
+                    }
                     let cutout =
                         ui.add_enabled(app.can_add_cutout_task(), Button::new("Contour cut"));
                     if cutout.clicked() {

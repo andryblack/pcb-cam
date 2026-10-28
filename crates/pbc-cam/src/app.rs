@@ -104,6 +104,15 @@ pub(crate) enum TaskDraftKind {
         stepdown: f64,
         spindle: u32,
     },
+    SpotDrill {
+        source_tools: BTreeSet<u32>,
+        depth: f64,
+        retract: f64,
+        feed: f64,
+        plunge: f64,
+        dwell: f64,
+        spindle: u32,
+    },
     Cutout {
         side: ContourSide,
         depth: f64,
@@ -146,6 +155,25 @@ impl TaskDraft {
                     dwell: drill.dwell_s,
                     stepdown: drill.stepdown_mm,
                     spindle: drill.spindle_rpm,
+                }
+            }
+            OperationKind::SpotDrill(spot) => {
+                let mut source_tools = spot.source_tools.clone();
+                if source_tools.is_empty() {
+                    for tool in project.layer(spot.layer)?.source_tools() {
+                        if let Some(number) = tool.number {
+                            source_tools.insert(number);
+                        }
+                    }
+                }
+                TaskDraftKind::SpotDrill {
+                    source_tools,
+                    depth: spot.depth_mm,
+                    retract: spot.retract_mm,
+                    feed: spot.feed_mm_min,
+                    plunge: spot.plunge_mm_min,
+                    dwell: spot.dwell_s,
+                    spindle: spot.spindle_rpm,
                 }
             }
             OperationKind::Cutout(cutout) => TaskDraftKind::Cutout {
@@ -200,6 +228,29 @@ impl TaskDraft {
                     "plunge": plunge,
                     "dwell": dwell,
                     "stepdown": stepdown,
+                    "spindle": spindle,
+                }),
+            ),
+            TaskDraftKind::SpotDrill {
+                source_tools,
+                depth,
+                retract,
+                feed,
+                plunge,
+                dwell,
+                spindle,
+            } => (
+                "task.update_spot_drill",
+                json!({
+                    "id": self.id.value(),
+                    "name": self.name,
+                    "tool": self.tool.value(),
+                    "source_tools": source_tools.iter().copied().collect::<Vec<_>>(),
+                    "depth": depth,
+                    "retract": retract,
+                    "feed": feed,
+                    "plunge": plunge,
+                    "dwell": dwell,
                     "spindle": spindle,
                 }),
             ),
@@ -325,6 +376,20 @@ impl PbcCam {
             && let Ok(library) = serde_json::from_str::<ToolLibrary>(&json)
         {
             session.set_tool_library(library);
+        }
+        if session
+            .tool_library()
+            .first_of_kind(ToolKind::Cone)
+            .is_none()
+        {
+            session.tool_library_mut().add(
+                "Cone 6.00 mm",
+                ToolKind::Cone,
+                6.0,
+                200.0,
+                80.0,
+                12_000,
+            );
         }
 
         Self {
@@ -648,6 +713,11 @@ impl PbcCam {
         self.add_task_with_layer("task.add_drill", layer, "Drilling");
     }
 
+    pub(crate) fn add_spot_drill_task(&mut self) {
+        let layer = self.spot_drill_layer_for_new_task();
+        self.add_task_with_layer("task.add_spot_drill", layer, "Spot drill");
+    }
+
     pub(crate) fn add_cutout_task(&mut self) {
         let layer = self.cutout_layer_for_new_task();
         self.add_task_with_layer("task.add_cutout", layer, "Contour cut");
@@ -679,6 +749,10 @@ impl PbcCam {
         self.drill_layer_for_new_task().is_some()
     }
 
+    pub(crate) fn can_add_spot_drill_task(&self) -> bool {
+        self.spot_drill_layer_for_new_task().is_some()
+    }
+
     pub(crate) fn can_add_cutout_task(&self) -> bool {
         self.cutout_layer_for_new_task().is_some()
     }
@@ -706,6 +780,28 @@ impl PbcCam {
                     layer.geometry(),
                     LayerGeometry::Excellon(excellon)
                         if !excellon.holes.is_empty() || !excellon.slots.is_empty()
+                )
+            })
+            .map(|layer| layer.id())
+    }
+
+    fn spot_drill_layer_for_new_task(&self) -> Option<LayerId> {
+        if let Some(Selection::Layer(id)) = self.selection
+            && let Some(layer) = self.project().layer(id)
+            && matches!(
+                layer.geometry(),
+                LayerGeometry::Excellon(excellon) if !excellon.holes.is_empty()
+            )
+        {
+            return Some(id);
+        }
+        self.project()
+            .layers()
+            .iter()
+            .find(|layer| {
+                matches!(
+                    layer.geometry(),
+                    LayerGeometry::Excellon(excellon) if !excellon.holes.is_empty()
                 )
             })
             .map(|layer| layer.id())
@@ -1179,9 +1275,12 @@ impl PbcCam {
         let Some(draft) = self.task_draft.clone() else {
             return;
         };
-        if let TaskDraftKind::Drill { source_tools, .. } = &draft.kind
-            && source_tools.is_empty()
-        {
+        let empty_filter = match &draft.kind {
+            TaskDraftKind::Drill { source_tools, .. }
+            | TaskDraftKind::SpotDrill { source_tools, .. } => source_tools.is_empty(),
+            _ => false,
+        };
+        if empty_filter {
             self.set_error("Task: select at least one source tool");
             return;
         }
@@ -1239,7 +1338,12 @@ impl PbcCam {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Type").size(11.0).color(theme::TEXT_MUTED));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    for kind in [ToolKind::VBit, ToolKind::EndMill, ToolKind::Drill] {
+                    for kind in [
+                        ToolKind::Cone,
+                        ToolKind::VBit,
+                        ToolKind::EndMill,
+                        ToolKind::Drill,
+                    ] {
                         if ui
                             .add(Button::selectable(editor.kind == kind, kind.label()))
                             .clicked()

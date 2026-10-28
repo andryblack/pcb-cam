@@ -22,6 +22,7 @@ enum InspectorAction {
     SetUnits(Unit),
     MoveTask(OperationId, usize),
     AddDrill,
+    AddSpotDrill,
     AddCutout,
     AddEngrave,
     ImportGerber,
@@ -98,6 +99,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
             );
         }
         Some(InspectorAction::AddDrill) => app.add_drill_task(),
+        Some(InspectorAction::AddSpotDrill) => app.add_spot_drill_task(),
         Some(InspectorAction::AddCutout) => app.add_cutout_task(),
         Some(InspectorAction::AddEngrave) => app.add_engrave_task(),
         Some(InspectorAction::ImportGerber) => app.import_gerber_dialog(),
@@ -244,9 +246,12 @@ fn layer_details(ui: &mut Ui, app: &PbcCam, id: LayerId, action: &mut Option<Ins
     }
 
     match layer.geometry() {
-        LayerGeometry::Excellon(_) => {
+        LayerGeometry::Excellon(excellon) => {
             if ui.button("+ Drilling task").clicked() {
                 *action = Some(InspectorAction::AddDrill);
+            }
+            if !excellon.holes.is_empty() && ui.button("+ Spot drill task").clicked() {
+                *action = Some(InspectorAction::AddSpotDrill);
             }
         }
         LayerGeometry::Gerber(gerber) => {
@@ -339,6 +344,7 @@ fn task_details(
         .unwrap_or_default();
     let selected_counts = match task.kind() {
         OperationKind::Drill(drill) => filtered_counts(app, &task, &drill.source_tools),
+        OperationKind::SpotDrill(spot) => filtered_counts(app, &task, &spot.source_tools),
         _ => (0, 0),
     };
     let Some(draft) = app.task_draft.as_mut() else {
@@ -398,40 +404,7 @@ fn task_details(
                 ui.add_space(8.0);
                 widgets::section_label(ui, "Source holes");
                 ui.add_space(3.0);
-                if source_tools.is_empty() {
-                    ui.label(
-                        RichText::new("The source layer has no tools.")
-                            .size(10.0)
-                            .color(theme::TEXT_FAINT),
-                    );
-                } else {
-                    for info in &source_tools {
-                        if let Some(number) = info.number {
-                            let mut checked = selected.contains(&number);
-                            if ui
-                                .checkbox(
-                                    &mut checked,
-                                    format!("{}  ({} obj)", info.label, info.count),
-                                )
-                                .changed()
-                            {
-                                if checked {
-                                    selected.insert(number);
-                                } else {
-                                    selected.remove(&number);
-                                }
-                                commit = true;
-                            }
-                        }
-                    }
-                    if selected.is_empty() {
-                        ui.label(
-                            RichText::new("Select at least one source tool.")
-                                .size(10.0)
-                                .color(theme::ERROR),
-                        );
-                    }
-                }
+                commit |= source_hole_selector(ui, &source_tools, selected);
                 let (holes, slots) = selected_counts;
                 widgets::field_row(
                     ui,
@@ -454,6 +427,41 @@ fn task_details(
                 commit |= inline_f64(ui, "Plunge", plunge, 1.0..=5_000.0, " mm/min");
                 commit |= inline_f64(ui, "Dwell", dwell, 0.0..=10.0, " s");
                 commit |= inline_f64(ui, "Helical step", stepdown, 0.05..=10.0, " mm");
+                commit |= inline_u32(ui, "Spindle", spindle, 0..=60_000, " rpm");
+            }
+            TaskDraftKind::SpotDrill {
+                source_tools: selected,
+                depth,
+                retract,
+                feed,
+                plunge,
+                dwell,
+                spindle,
+            } => {
+                ui.add_space(8.0);
+                widgets::section_label(ui, "Source holes");
+                ui.add_space(3.0);
+                commit |= source_hole_selector(ui, &source_tools, selected);
+                let (holes, _slots) = selected_counts;
+                widgets::field_row(
+                    ui,
+                    "Selected",
+                    &format!("{} hole{}", holes, if holes == 1 { "" } else { "s" }),
+                );
+                ui.label(
+                    RichText::new("Slots are ignored: spot drilling uses hole centres.")
+                        .size(9.5)
+                        .color(theme::TEXT_FAINT),
+                );
+
+                ui.add_space(8.0);
+                widgets::section_label(ui, "Spot parameters");
+                ui.add_space(3.0);
+                commit |= inline_f64(ui, "Depth", depth, 0.01..=50.0, " mm");
+                commit |= inline_f64(ui, "Retract", retract, 0.1..=100.0, " mm");
+                commit |= inline_f64(ui, "Feed", feed, 1.0..=10_000.0, " mm/min");
+                commit |= inline_f64(ui, "Plunge", plunge, 1.0..=5_000.0, " mm/min");
+                commit |= inline_f64(ui, "Dwell", dwell, 0.0..=10.0, " s");
                 commit |= inline_u32(ui, "Spindle", spindle, 0..=60_000, " rpm");
             }
             TaskDraftKind::Cutout {
@@ -597,6 +605,49 @@ fn task_details(
     });
 }
 
+fn source_hole_selector(
+    ui: &mut Ui,
+    source_tools: &[pbc_cam_core::SourceToolInfo],
+    selected: &mut std::collections::BTreeSet<u32>,
+) -> bool {
+    let mut commit = false;
+    if source_tools.is_empty() {
+        ui.label(
+            RichText::new("The source layer has no tools.")
+                .size(10.0)
+                .color(theme::TEXT_FAINT),
+        );
+        return commit;
+    }
+    for info in source_tools {
+        if let Some(number) = info.number {
+            let mut checked = selected.contains(&number);
+            if ui
+                .checkbox(
+                    &mut checked,
+                    format!("{}  ({} obj)", info.label, info.count),
+                )
+                .changed()
+            {
+                if checked {
+                    selected.insert(number);
+                } else {
+                    selected.remove(&number);
+                }
+                commit = true;
+            }
+        }
+    }
+    if selected.is_empty() {
+        ui.label(
+            RichText::new("Select at least one source tool.")
+                .size(10.0)
+                .color(theme::ERROR),
+        );
+    }
+    commit
+}
+
 fn tool_selector(ui: &mut Ui, tools: &[Tool], selected: &mut ToolId) -> bool {
     let selected_text = tools
         .iter()
@@ -709,6 +760,7 @@ fn filtered_counts(
 fn task_color(kind: &OperationKind) -> egui::Color32 {
     match kind {
         OperationKind::Drill(_) => theme::COPPER,
+        OperationKind::SpotDrill(_) => theme::COPPER_BRIGHT,
         OperationKind::Cutout(_) => theme::ACCENT,
         OperationKind::Engrave(_) => theme::COPPER_BRIGHT,
     }

@@ -45,18 +45,19 @@ Implemented:
 - **Source tool browser**:
   - Excellon tools with number, diameter and object count
   - Gerber aperture summaries with object counts
-  - read-only; Excellon tools filter drilling tasks
+  - read-only; Excellon tools filter drilling and spot-drilling tasks
 - **User machining tool library**:
-  - add, edit and remove drills, end mills and V-bits
+  - add, edit and remove drills, end mills, V-bits and cone/spot drills
   - diameter, feed, plunge and spindle defaults
   - persisted across restarts and shared by all projects
   - used by every task; a tool in use cannot be removed
 - **Tasks** with type-specific settings:
   - **Drilling** — source-hole filter, machining tool, depth, retract, feed, plunge, dwell, helical step-down, spindle
+  - **Spot drilling** — source-hole filter, Cone machining tool, depth, retract, feed, plunge, dwell, spindle; uses hole centres only and ignores diameters/slots
   - **Contour cut** — machining tool, outside/inside/on-line offset, depth, retract, feed, plunge, spindle
   - **Engraving** — machining tool, outside/inside offset, pass count, offset step, depth, retract, feed, plunge, spindle
 - Task timeline with selection, enable/disable, creation, reordering and online editing in the inspector
-- Selected-task canvas overlay in red: drill/slot positions, contour-cut offset toolpath or engraving paths
+- Selected-task canvas overlay in red: drill/slot positions, spot-drill centres, contour-cut offset toolpath or engraving paths
 - **Helical interpolation** for holes larger than the selected end mill/V-bit. A 1.0 mm end mill can machine a 1.5 mm hole with a helical path; a drill bit is rejected because it cannot side-cut.
 - G-code export:
   - selected task only
@@ -163,10 +164,11 @@ The script builds a release binary, assembles `PBC-CAM.app` with the app icon an
 6. Add a task from **+ Task** in the toolbar/timeline or from the browser when a
    suitable layer is selected:
    - **Drilling** needs an Excellon layer.
+   - **Spot drill** needs an Excellon layer with holes; it punches only hole centres with a Cone tool.
    - **Contour cut** needs a Gerber layer with closed contours.
    - **Engraving** needs a Gerber layer with paths.
 7. Select the task. Edit it directly in the inspector: choose one
-   **machining tool**, check the **source tools** for drilling, and change
+   **machining tool**, check the **source tools** for drilling/spot drilling, and change
    depths/feeds. Changes are applied online; there is no separate task-edit dialog.
    While selected, the task is drawn in red on the canvas — drilling positions
    for drill tasks, or the offset/engraving trajectory for milling tasks.

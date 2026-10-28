@@ -131,6 +131,16 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         );
                     }
 
+                    let can_spot = app.can_add_spot_drill_task();
+                    let spot = ui.add_enabled(can_spot, Button::new("Add Spot Drill Task"));
+                    if spot.clicked() {
+                        app.add_spot_drill_task();
+                        ui.close();
+                    }
+                    if !can_spot {
+                        spot.on_disabled_hover_text("Import an Excellon layer with holes first");
+                    }
+
                     let can_cutout = app.can_add_cutout_task();
                     let cutout = ui.add_enabled(can_cutout, Button::new("Add Contour Cut Task"));
                     if cutout.clicked() {

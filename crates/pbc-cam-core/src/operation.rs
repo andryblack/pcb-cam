@@ -120,6 +120,67 @@ impl DrillOperation {
     }
 }
 
+/// Parameters of a spot-drilling (centre-punching) task.
+///
+/// Source holes select positions only; the hole diameter is irrelevant. The
+/// default machining tool is a cone/spot drill.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpotDrillOperation {
+    /// Excellon layer that supplies the hole positions.
+    pub layer: LayerId,
+    /// Machining tool from the user library.
+    pub tool: ToolId,
+    /// Source Excellon tool numbers selected for this task.
+    ///
+    /// An empty set means all source tools with holes.
+    pub source_tools: BTreeSet<u32>,
+    /// Spot depth below the board surface, in millimetres.
+    pub depth_mm: f64,
+    /// Safe Z height, in millimetres.
+    pub retract_mm: f64,
+    /// XY feed rate.
+    pub feed_mm_min: f64,
+    /// Z plunge rate.
+    pub plunge_mm_min: f64,
+    /// Dwell at the bottom of each spot, in seconds.
+    pub dwell_s: f64,
+    /// Spindle speed.
+    pub spindle_rpm: u32,
+}
+
+impl SpotDrillOperation {
+    /// Sensible defaults for a new spot-drilling task.
+    pub fn new(layer: LayerId, tool: ToolId) -> Self {
+        Self {
+            layer,
+            tool,
+            source_tools: BTreeSet::new(),
+            depth_mm: 0.5,
+            retract_mm: 3.0,
+            feed_mm_min: 250.0,
+            plunge_mm_min: 80.0,
+            dwell_s: 0.05,
+            spindle_rpm: 15_000,
+        }
+    }
+
+    /// Validate the task before generating G-code.
+    pub fn validate(&self) -> Result<(), String> {
+        validate_tool_id(self.tool)?;
+        validate_z_and_feeds(
+            self.depth_mm,
+            self.retract_mm,
+            self.feed_mm_min,
+            self.plunge_mm_min,
+            self.spindle_rpm,
+        )?;
+        if !self.dwell_s.is_finite() || self.dwell_s < 0.0 {
+            return Err("dwell must not be negative".into());
+        }
+        Ok(())
+    }
+}
+
 /// Parameters of a contour cut (board outline or an internal cut-out).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CutoutOperation {
@@ -342,6 +403,8 @@ fn validate_z_and_feeds(
 pub enum OperationKind {
     /// Drill all holes and rout all slots in an Excellon layer.
     Drill(DrillOperation),
+    /// Spot-drill the selected hole centres without a diameter.
+    SpotDrill(SpotDrillOperation),
     /// Cut along closed Gerber contours.
     Cutout(CutoutOperation),
     /// Engrave paths and polygon outlines.
@@ -353,6 +416,7 @@ impl OperationKind {
     pub const fn label(&self) -> &'static str {
         match self {
             Self::Drill(_) => "Drill",
+            Self::SpotDrill(_) => "Spot drill",
             Self::Cutout(_) => "Contour cut",
             Self::Engrave(_) => "Engrave",
         }
@@ -362,6 +426,7 @@ impl OperationKind {
     pub const fn tool(&self) -> ToolId {
         match self {
             Self::Drill(task) => task.tool,
+            Self::SpotDrill(task) => task.tool,
             Self::Cutout(task) => task.tool,
             Self::Engrave(task) => task.tool,
         }
@@ -371,6 +436,7 @@ impl OperationKind {
     pub const fn source_layer(&self) -> LayerId {
         match self {
             Self::Drill(task) => task.layer,
+            Self::SpotDrill(task) => task.layer,
             Self::Cutout(task) => task.layer,
             Self::Engrave(task) => task.layer,
         }
@@ -380,6 +446,7 @@ impl OperationKind {
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Self::Drill(task) => task.validate(),
+            Self::SpotDrill(task) => task.validate(),
             Self::Cutout(task) => task.validate(),
             Self::Engrave(task) => task.validate(),
         }
@@ -473,6 +540,8 @@ pub type TaskId = OperationId;
 pub type TaskKind = OperationKind;
 /// Newer name for a drilling task.
 pub type DrillTask = DrillOperation;
+/// Newer name for a spot-drilling task.
+pub type SpotDrillTask = SpotDrillOperation;
 /// Newer name for a contour cut task.
 pub type CutoutTask = CutoutOperation;
 /// Newer name for an engraving task.
@@ -498,6 +567,17 @@ mod tests {
         drill.depth_mm = 1.0;
         drill.spindle_rpm = 0;
         assert!(drill.validate().is_err());
+    }
+
+    #[test]
+    fn spot_drill_defaults_validate() {
+        let mut spot = SpotDrillOperation::new(LayerId::new(1), ToolId::new(1));
+        assert!(spot.validate().is_ok());
+        spot.depth_mm = 0.0;
+        assert!(spot.validate().is_err());
+        spot.depth_mm = 0.5;
+        spot.dwell_s = -1.0;
+        assert!(spot.validate().is_err());
     }
 
     #[test]

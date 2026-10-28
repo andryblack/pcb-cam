@@ -628,6 +628,23 @@ fn draw_task_overlay(painter: &Painter, rect: Rect, app: &PbcCam) {
                 draw_drill_cross(painter, end, color);
             }
         }
+        OperationKind::SpotDrill(spot) => {
+            let LayerGeometry::Excellon(excellon) = layer.geometry() else {
+                return;
+            };
+            for hole in &excellon.holes {
+                if spot.source_tools.is_empty() || spot.source_tools.contains(&hole.tool) {
+                    draw_drill_position(
+                        painter,
+                        rect,
+                        &app.view,
+                        hole.position.x,
+                        hole.position.y,
+                        color,
+                    );
+                }
+            }
+        }
         OperationKind::Cutout(cutout) => {
             let LayerGeometry::Gerber(gerber) = layer.geometry() else {
                 return;

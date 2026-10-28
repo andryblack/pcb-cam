@@ -27,7 +27,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                 );
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("Ordered drilling, contour-cut and engraving steps")
+                    RichText::new("Ordered drilling, spot-drilling, contour-cut and engraving steps")
                         .size(10.0)
                         .color(theme::TEXT_FAINT),
                 );
@@ -52,6 +52,14 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         );
                         if drill.clicked() {
                             app.add_drill_task();
+                            ui.close();
+                        }
+                        let spot = ui.add_enabled(
+                            app.can_add_spot_drill_task(),
+                            Button::new("Spot drill"),
+                        );
+                        if spot.clicked() {
+                            app.add_spot_drill_task();
                             ui.close();
                         }
                         let cutout = ui.add_enabled(
@@ -118,7 +126,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                                 .corner_radius(6)
                                 .inner_margin(Margin::symmetric(9, 5))
                                 .show(ui, |ui| {
-                                    ui.set_min_width(172.0);
+                                    ui.set_width(190.0);
                                     ui.horizontal(|ui| {
                                         let (dot, _) = ui.allocate_exact_size(
                                             vec2(7.0, 7.0),
@@ -145,10 +153,13 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                                                 Some(Selection::Task(task.id()));
                                         }
                                     });
-                                    ui.label(
-                                        RichText::new(task_subtitle(app, task))
-                                            .size(9.5)
-                                            .color(theme::TEXT_MUTED),
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(task_subtitle(app, task))
+                                                .size(9.5)
+                                                .color(theme::TEXT_MUTED),
+                                        )
+                                        .truncate(),
                                     );
                                 });
                             ui.add_space(4.0);
@@ -171,6 +182,7 @@ fn tool_label(app: &PbcCam, task: &pbc_cam_core::Task) -> String {
 fn task_color(kind: &pbc_cam_core::OperationKind) -> egui::Color32 {
     match kind {
         pbc_cam_core::OperationKind::Drill(_) => theme::COPPER,
+        pbc_cam_core::OperationKind::SpotDrill(_) => theme::COPPER_BRIGHT,
         pbc_cam_core::OperationKind::Cutout(_) => theme::ACCENT,
         pbc_cam_core::OperationKind::Engrave(_) => theme::COPPER_BRIGHT,
     }
@@ -209,6 +221,30 @@ fn task_subtitle(app: &PbcCam, task: &pbc_cam_core::Task) -> String {
             format!(
                 "Drill · {tool} · {holes} objects · {:.2} mm{enabled}",
                 drill.depth_mm
+            )
+        }
+        pbc_cam_core::OperationKind::SpotDrill(spot) => {
+            let holes = app
+                .project()
+                .layer(spot.layer)
+                .and_then(|layer| match layer.geometry() {
+                    pbc_cam_core::LayerGeometry::Excellon(excellon) => Some(
+                        excellon
+                            .holes
+                            .iter()
+                            .filter(|hole| {
+                                spot.source_tools.is_empty()
+                                    || spot.source_tools.contains(&hole.tool)
+                            })
+                            .count(),
+                    ),
+                    pbc_cam_core::LayerGeometry::Gerber(_) => None,
+                })
+                .unwrap_or(0);
+            format!(
+                "Spot · {} · {holes} holes · {:.2} mm{enabled}",
+                tool_label(app, task),
+                spot.depth_mm
             )
         }
         pbc_cam_core::OperationKind::Cutout(cutout) => format!(
