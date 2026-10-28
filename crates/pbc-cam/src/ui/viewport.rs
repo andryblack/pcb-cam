@@ -448,10 +448,22 @@ fn draw_excellon(
             continue;
         }
         let width = (slot.diameter_mm as f32 * view.zoom()).max(1.4);
-        painter.line_segment([start, end], Stroke::new(width, color));
-        if width > 3.0 {
-            painter.line_segment([start, end], Stroke::new(width - 2.0, theme::CANVAS));
-        }
+        draw_slot(painter, start, end, width, color);
+    }
+}
+
+fn draw_slot(painter: &Painter, start: Pos2, end: Pos2, width: f32, color: Color32) {
+    let radius = width * 0.5;
+    painter.line_segment([start, end], Stroke::new(width, color));
+    painter.circle_filled(start, radius, color);
+    painter.circle_filled(end, radius, color);
+
+    let inner = width - 2.0;
+    if inner > 0.8 {
+        let inner_radius = inner * 0.5;
+        painter.line_segment([start, end], Stroke::new(inner, theme::CANVAS));
+        painter.circle_filled(start, inner_radius, theme::CANVAS);
+        painter.circle_filled(end, inner_radius, theme::CANVAS);
     }
 }
 

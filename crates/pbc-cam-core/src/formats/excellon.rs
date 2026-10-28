@@ -2,7 +2,8 @@
 //!
 //! Supports the common Excellon 2 subset emitted by KiCad, Eagle and
 //! Gerbv: `M48` headers, metric/inch units, tool definitions, decimal or
-//! fixed-format coordinates, drill hits and `G85` slots.
+//! fixed-format coordinates, drill hits, `G85` slots and `M15`/`M16`
+//! routed slots.
 
 use std::collections::BTreeMap;
 
@@ -54,6 +55,7 @@ struct Parser {
     current: Point,
     holes: Vec<DrillHit>,
     slots: Vec<DrillSlot>,
+    routing: bool,
     warnings: Vec<String>,
 }
 
@@ -73,6 +75,7 @@ impl Parser {
             current: Point::ORIGIN,
             holes: Vec::new(),
             slots: Vec::new(),
+            routing: false,
             warnings: Vec::new(),
         }
     }
@@ -167,6 +170,14 @@ impl Parser {
             self.warn("incremental Excellon coordinates are supported with limited validation");
             return Ok(());
         }
+        if upper == "M15" {
+            self.routing = true;
+            return Ok(());
+        }
+        if upper == "M16" {
+            self.routing = false;
+            return Ok(());
+        }
         if upper == "G05" || upper == "M71" || upper == "M72" {
             if upper == "M71" {
                 self.units = Some(Unit::Millimeter);
@@ -217,7 +228,16 @@ impl Parser {
             .ok_or_else(|| ParseError::new(self.line, format!("tool T{tool} has no definition")))?;
 
         let slot = upper.contains("G85");
+        let rapid = upper.contains("G00");
         let first = self.group_point(groups.first().map(Vec::as_slice).unwrap_or(&[]), factor)?;
+
+        if rapid && !slot {
+            // G00 only positions the tool. Without this, routed slots are
+            // misread as a drill hit at every end point.
+            self.current = first;
+            return Ok(());
+        }
+
         if slot {
             let second =
                 self.group_point(groups.get(1).map(Vec::as_slice).unwrap_or(&[]), factor)?;
@@ -228,6 +248,21 @@ impl Parser {
                 diameter_mm: diameter,
             });
             self.current = second;
+        } else if self.routing {
+            // A coordinate line between M15 and M16 is a routed slot. Some
+            // files emit one G01 segment, others several.
+            let mut start = self.current;
+            for group in &groups {
+                let end = self.group_point(group, factor)?;
+                self.slots.push(DrillSlot {
+                    start,
+                    end,
+                    tool,
+                    diameter_mm: diameter,
+                });
+                start = end;
+            }
+            self.current = start;
         } else {
             self.holes.push(DrillHit {
                 position: first,
@@ -307,7 +342,10 @@ impl Parser {
         Ok(if negative { -value } else { value })
     }
 
-    fn finish(self) -> Result<ExcellonLayer, ParseError> {
+    fn finish(mut self) -> Result<ExcellonLayer, ParseError> {
+        if self.routing {
+            self.warn("routing started with M15 but never stopped with M16");
+        }
         if self.holes.is_empty() && self.slots.is_empty() {
             return Err(ParseError::new(
                 self.line,
@@ -434,6 +472,30 @@ X1.5Y2.5
         let layer = parse_excellon(source).unwrap();
         assert!((layer.holes[0].diameter_mm - 1.016).abs() < 1e-9);
         assert!((layer.holes[0].position.x - 38.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parses_m15_m16_routed_slots() {
+        let source = "\
+M48
+METRIC
+T1C1.0
+%
+G90
+G05
+T1
+G00X10.0Y10.0
+M15
+G01X20.0Y10.0
+M16
+M30
+";
+        let layer = parse_excellon(source).unwrap();
+        assert!(layer.holes.is_empty());
+        assert_eq!(layer.slots.len(), 1);
+        assert_eq!(layer.slots[0].start, Point::new(10.0, 10.0));
+        assert_eq!(layer.slots[0].end, Point::new(20.0, 10.0));
+        assert_eq!(layer.slots[0].diameter_mm, 1.0);
     }
 
     #[test]

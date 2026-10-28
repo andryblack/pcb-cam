@@ -37,7 +37,7 @@ Implemented:
 - Excellon import:
   - metric and inch headers
   - fixed-format and decimal coordinates
-  - tool definitions, drill hits and `G85` slots
+  - tool definitions, drill hits, `G85` slots and `M15`/`M16` routed slots
 - Canvas layer rendering with fit-to-project, pan/zoom, grid, axes and scale bar
 - Correct triangulation of concave Gerber regions (earcutr) instead of convex fan fill
 - Circular-aperture traces with round joins and caps, matching Gerber stroke geometry
