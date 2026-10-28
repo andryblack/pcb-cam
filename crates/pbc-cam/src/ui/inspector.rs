@@ -534,7 +534,7 @@ fn task_details(
                 commit |= inline_f64(ui, "Offset step", stepover, 0.0..=50.0, " mm");
                 ui.label(
                     RichText::new(
-                        "Offset passes apply to closed contours; open paths are engraved once.",
+                        "Closed contours: outside/inside. Open paths: Outside = left, Inside = right.",
                     )
                     .size(9.5)
                     .color(theme::TEXT_FAINT),
@@ -721,8 +721,11 @@ fn inline_u32(
                     .speed(100)
                     .suffix(suffix),
             );
+            // Integer fields such as Passes should apply as soon as they
+            // change, including while the user types. Dragging is still
+            // committed once on release.
             commit = response.drag_stopped()
-                || (response.changed() && response.lost_focus())
+                || (response.changed() && !response.dragged())
                 || (response.changed()
                     && response.hovered()
                     && ui.input(|input| input.pointer.any_released()));

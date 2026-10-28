@@ -594,6 +594,90 @@ pub fn offset_closed_path(path: &Path, distance: f64) -> Option<Path> {
     Some(Path::closed(result))
 }
 
+/// Offset an open polyline to the left by a signed distance.
+///
+/// Positive distances move left of the path direction, negative distances move
+/// right. Joins are mitred with a bounded miter length. Used by engraving
+/// passes on traces and other open Gerber paths.
+pub fn offset_open_path(path: &Path, distance: f64) -> Option<Path> {
+    if !distance.is_finite() {
+        return None;
+    }
+    let mut points = Vec::with_capacity(path.points.len());
+    for point in &path.points {
+        if points
+            .last()
+            .is_none_or(|last: &Point| last.distance(*point) > 1e-9)
+        {
+            points.push(*point);
+        }
+    }
+    if points.len() < 2 {
+        return None;
+    }
+    if distance.abs() < 1e-9 {
+        return Some(Path::new(points));
+    }
+
+    let count = points.len();
+    let mut result = Vec::with_capacity(count);
+    for index in 0..count {
+        let current = points[index];
+        let incoming = if index > 0 {
+            let delta = current - points[index - 1];
+            if delta.distance(Point::ORIGIN) > 1e-9 {
+                Some(normalize(Point::new(-delta.y, delta.x)))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let outgoing = if index + 1 < count {
+            let delta = points[index + 1] - current;
+            if delta.distance(Point::ORIGIN) > 1e-9 {
+                Some(normalize(Point::new(-delta.y, delta.x)))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let normal = match (incoming, outgoing) {
+            (Some(incoming), Some(outgoing)) => {
+                let mut miter = Point::new(incoming.x + outgoing.x, incoming.y + outgoing.y);
+                if miter.distance(Point::ORIGIN) < 1e-9 {
+                    incoming
+                } else {
+                    miter = normalize(miter);
+                    let denominator = miter.x * incoming.x + miter.y * incoming.y;
+                    let scale = if denominator.abs() < 0.2 {
+                        4.0 * distance
+                    } else {
+                        distance / denominator
+                    };
+                    let limit = 4.0 * distance.abs();
+                    let scale = scale.clamp(-limit, limit);
+                    result.push(Point::new(
+                        current.x + miter.x * scale,
+                        current.y + miter.y * scale,
+                    ));
+                    continue;
+                }
+            }
+            (Some(normal), None) | (None, Some(normal)) => normal,
+            (None, None) => continue,
+        };
+        result.push(Point::new(
+            current.x + normal.x * distance,
+            current.y + normal.y * distance,
+        ));
+    }
+
+    (result.len() >= 2).then(|| Path::new(result))
+}
+
 fn normalized_contour(path: &Path, closed_required: bool) -> Option<Path> {
     if path.points.len() < 2 {
         return None;

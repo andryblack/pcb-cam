@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::geometry::{GerberLayer, Path, offset_closed_path};
+use crate::geometry::{GerberLayer, Path, offset_closed_path, offset_open_path};
 use crate::{LayerId, ToolId};
 
 /// Stable identifier of a task inside a [`Project`](crate::Project).
@@ -343,21 +343,25 @@ impl EngraveOperation {
 
     /// Generate engraved paths, including the requested offset passes.
     ///
-    /// Side/offset passes apply to closed contours. Open paths are line art and
-    /// are engraved once on their centreline.
+    /// Closed contours are offset outside/inside their enclosed area. Open
+    /// paths are offset left for Outside and right for Inside, so traces can be
+    /// engraved beside the centreline as well as on it.
     pub fn toolpaths(&self, gerber: &GerberLayer) -> Vec<Path> {
         let mut result = Vec::new();
         for path in gerber.engraving_paths() {
-            if !path.closed {
-                result.push(path);
-                continue;
-            }
             for pass in 0..self.passes {
                 let distance =
                     self.side.sign() * (self.offset_mm + f64::from(pass) * self.stepover_mm);
                 if distance.abs() < 1e-9 {
                     result.push(path.clone());
-                } else if let Some(offset) = offset_closed_path(&path, distance) {
+                    continue;
+                }
+                let offset = if path.closed {
+                    offset_closed_path(&path, distance)
+                } else {
+                    offset_open_path(&path, distance)
+                };
+                if let Some(offset) = offset {
                     result.push(offset);
                 }
             }
@@ -627,6 +631,34 @@ mod tests {
         let last = paths[2].bounds().unwrap();
         assert!(last.width() > first.width());
         assert!(last.height() > first.height());
+    }
+
+    #[test]
+    fn engrave_open_paths_are_offset_to_the_selected_side() {
+        let path = Path::new(vec![Point::new(0.0, 0.0), Point::new(10.0, 0.0)]);
+        let gerber = GerberLayer {
+            primitives: vec![Primitive::Stroke {
+                path,
+                aperture: Aperture::circle(0.2),
+                polarity: Polarity::Dark,
+            }],
+            source_units: Some(crate::Unit::Millimeter),
+            warnings: Vec::new(),
+        };
+        let mut engrave = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
+        engrave.side = EngraveSide::Outside;
+        engrave.offset_mm = 1.0;
+        engrave.passes = 2;
+        engrave.stepover_mm = 0.5;
+        let paths = engrave.toolpaths(&gerber);
+        assert_eq!(paths.len(), 2);
+        assert!((paths[0].points[0].y - 1.0).abs() < 1e-9);
+        assert!((paths[1].points[0].y - 1.5).abs() < 1e-9);
+
+        engrave.side = EngraveSide::Inside;
+        let paths = engrave.toolpaths(&gerber);
+        assert_eq!(paths.len(), 2);
+        assert!((paths[0].points[0].y + 1.0).abs() < 1e-9);
     }
 
     #[test]

@@ -101,7 +101,7 @@ Next:
 - Gerber source apertures are listed, but currently only **drilling tasks** use source tools as filters. Contour-cut and engraving tasks process the whole layer.
 - Gerber regions are triangulated; regions with multiple nested contours/islands may not be fully supported yet.
 - Contour offsets use mitred joins without a full self-intersection cleanup.
-- Engraving follows outlines and paths; filled/hardened area clearing is not implemented. Side/offset passes apply to closed contours; open paths are engraved once on the centreline.
+- Engraving follows outlines and paths; filled/hardened area clearing is not implemented. Offset passes apply to closed contours and to open paths (Outside = left side of the path, Inside = right side).
 - Slots narrower than the machining tool are rejected; wider slots are routed on the centreline, which may not clear the full slot width.
 - Projects are not saved yet; the machining tool library is persisted, generated G-code is the durable output.
 - G-code is emitted in millimetres with explicit drill/plunge moves. It does not yet include machine-specific headers, work offsets or cutter compensation.

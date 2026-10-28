@@ -1509,6 +1509,28 @@ M30
         assert_eq!(engrave.offset_mm, 0.2);
         assert_eq!(engrave.passes, 4);
         assert_eq!(engrave.stepover_mm, 0.15);
+
+        session
+            .execute(
+                "task.update_engrave",
+                &json!({
+                    "id": created["id"],
+                    "passes": 7,
+                    "offset": 0.4,
+                    "stepover": 0.3,
+                }),
+            )
+            .unwrap();
+        let task = session
+            .project()
+            .task(OperationId::new(created["id"].as_u64().unwrap()))
+            .unwrap();
+        let OperationKind::Engrave(engrave) = task.kind() else {
+            panic!("expected engrave task");
+        };
+        assert_eq!(engrave.passes, 7);
+        assert_eq!(engrave.offset_mm, 0.4);
+        assert_eq!(engrave.stepover_mm, 0.3);
     }
 
     #[test]
