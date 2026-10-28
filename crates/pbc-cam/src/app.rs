@@ -1074,15 +1074,23 @@ impl PbcCam {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        // Cmd+Q is the one shortcut that must work even while editing text.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Q)) {
+            Self::quit(ctx);
+            return;
+        }
+
+        // When a text field (including a DragValue in edit mode) has focus,
+        // every key belongs to that field. In particular, the macOS Delete key
+        // sends Backspace and must never trigger "remove selection".
+        if ctx.text_edit_focused() {
+            return;
+        }
+
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.about_open = false;
             self.shortcuts_open = false;
             self.task_draft = None;
-        }
-
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Q)) {
-            Self::quit(ctx);
-            return;
         }
 
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F1)) {
