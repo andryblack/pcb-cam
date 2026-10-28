@@ -76,6 +76,12 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                 if excellon.clicked() {
                     app.import_excellon_dialog();
                 }
+                let zip = ui
+                    .add(Button::new(RichText::new("ZIP").size(11.5)))
+                    .on_hover_text("Import a Gerber/Excellon ZIP archive");
+                if zip.clicked() {
+                    app.import_zip_dialog();
+                }
 
                 ui.menu_button(RichText::new("+ Task").size(11.5), |ui| {
                     let drill = ui.add_enabled(app.can_add_drill_task(), Button::new("Drilling"));

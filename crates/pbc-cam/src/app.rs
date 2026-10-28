@@ -1,7 +1,9 @@
 //! Application state and top-level egui layout.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Align2, Button, Key, Modifiers, RichText, Stroke, Vec2};
 use pbc_cam_core::{
@@ -425,8 +427,144 @@ impl PbcCam {
         };
         self.import_path(path);
     }
+    pub(crate) fn import_zip_dialog(&mut self) {
+        let Some(path) = file_dialog("Import Gerber ZIP", "ZIP archive", &["zip"]) else {
+            return;
+        };
+        self.import_zip(path);
+    }
+
+    /// Import every Gerber/Excellon file contained in a ZIP archive.
+    pub(crate) fn import_zip(&mut self, path: PathBuf) -> bool {
+        let file = match File::open(&path) {
+            Ok(file) => file,
+            Err(error) => {
+                self.set_error(format!("Cannot open {}: {error}", path.display()));
+                return false;
+            }
+        };
+        let mut archive = match zip::ZipArchive::new(file) {
+            Ok(archive) => archive,
+            Err(error) => {
+                self.set_error(format!("Cannot read ZIP {}: {error}", path.display()));
+                return false;
+            }
+        };
+
+        let zip_name = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Imported PCB".to_owned());
+        if self.project().layers().is_empty() && self.project().tasks().is_empty() {
+            let _ = self.run_command("project.new", json!({"name": zip_name}));
+        }
+
+        let mut imported = 0usize;
+        let mut objects = 0usize;
+        let mut warnings = 0usize;
+        let mut skipped = 0usize;
+        let mut preferred_layer = None;
+        let mut fallback_layer = None;
+
+        for index in 0..archive.len() {
+            let mut entry = match archive.by_index(index) {
+                Ok(entry) => entry,
+                Err(error) => {
+                    log::warn!("ZIP entry {index} cannot be read: {error}");
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let entry_name = entry.name().to_owned();
+            if entry.is_dir() || skip_zip_entry(&entry_name) {
+                skipped += 1;
+                continue;
+            }
+            if entry.size() > 64 * 1024 * 1024 {
+                log::warn!("ZIP entry `{entry_name}` is too large, skipped");
+                skipped += 1;
+                continue;
+            }
+
+            let mut bytes = Vec::new();
+            if let Err(error) = entry.read_to_end(&mut bytes) {
+                log::warn!("ZIP entry `{entry_name}` cannot be decompressed: {error}");
+                skipped += 1;
+                continue;
+            }
+            let text = String::from_utf8_lossy(&bytes);
+            let Some(format) = classify_zip_entry(&entry_name, &text) else {
+                skipped += 1;
+                continue;
+            };
+            let Some(stem) = Path::new(&entry_name)
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+            else {
+                skipped += 1;
+                continue;
+            };
+            let command = match format {
+                SourceFormat::Gerber => "file.import_gerber",
+                SourceFormat::Excellon => "file.import_excellon",
+            };
+            match self.run_command(command, json!({"content": text.as_ref(), "name": stem})) {
+                Some(value) => {
+                    imported += 1;
+                    objects += value.get("objects").and_then(Value::as_u64).unwrap_or(0) as usize;
+                    warnings += value
+                        .get("warnings")
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len);
+                    let layer = value.get("layer").and_then(Value::as_u64).map(LayerId::new);
+                    if fallback_layer.is_none() {
+                        fallback_layer = layer;
+                    }
+                    if format == SourceFormat::Gerber && preferred_layer.is_none() {
+                        preferred_layer = layer;
+                    }
+                }
+                None => {
+                    skipped += 1;
+                }
+            }
+        }
+
+        if imported == 0 {
+            self.set_error(format!(
+                "ZIP: no Gerber/Excellon layers imported ({skipped} entries skipped)"
+            ));
+            return false;
+        }
+
+        if let Some(layer) = preferred_layer.or(fallback_layer) {
+            self.selection = Some(Selection::Layer(layer));
+        }
+        self.fit_requested = true;
+        let skipped_note = if skipped > 0 {
+            format!(" · {skipped} skipped")
+        } else {
+            String::new()
+        };
+        let warning_note = if warnings > 0 {
+            format!(" · {warnings} warnings")
+        } else {
+            String::new()
+        };
+        self.set_status(format!(
+            "Imported ZIP: {imported} layers · {objects} objects{skipped_note}{warning_note}"
+        ));
+        true
+    }
 
     pub(crate) fn import_path(&mut self, path: PathBuf) {
+        if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+        {
+            self.import_zip(path);
+            return;
+        }
         let Some(format) = SourceFormat::from_path(&path) else {
             self.set_error(format!(
                 "Unknown file type: {}",
@@ -1221,6 +1359,45 @@ impl eframe::App for PbcCam {
     }
 }
 
+fn skip_zip_entry(name: &str) -> bool {
+    let name = name.replace('\\', "/");
+    name.starts_with("__MACOSX/")
+        || name.starts_with("._")
+        || name.contains("/._")
+        || name.ends_with('/')
+}
+
+fn classify_zip_entry(name: &str, text: &str) -> Option<SourceFormat> {
+    let extension = Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(
+        extension.as_str(),
+        "txt" | "md" | "pdf" | "html" | "htm" | "csv" | "json" | "xml"
+    ) {
+        // .txt is in the Excellon extension list, but ZIPs often contain
+        // ordering instructions. Only accept it when it looks like Excellon.
+        let head = text.trim_start_matches('\u{feff}').trim_start();
+        if extension == "txt" && head.starts_with("M48") {
+            return Some(SourceFormat::Excellon);
+        }
+        return None;
+    }
+    if let Some(format) = SourceFormat::from_path(Path::new(name)) {
+        return Some(format);
+    }
+    let head = text.trim_start_matches('\u{feff}').trim_start();
+    if head.starts_with("%FS") || (head.starts_with("G04") && head.contains("%MO")) {
+        return Some(SourceFormat::Gerber);
+    }
+    if head.starts_with("M48") {
+        return Some(SourceFormat::Excellon);
+    }
+    None
+}
+
 pub(crate) fn dialog_frame() -> egui::Frame {
     egui::Frame::new()
         .fill(theme::PANEL_RAISED)
@@ -1279,4 +1456,44 @@ fn file_dialog(title: &str, filter: &str, extensions: &[&str]) -> Option<PathBuf
         .set_title(title)
         .add_filter(filter, extensions)
         .pick_file()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zip_entries_are_classified_by_extension_and_content() {
+        assert_eq!(
+            classify_zip_entry("Gerber_TopLayer.GTL", "G04*%"),
+            Some(SourceFormat::Gerber)
+        );
+        assert_eq!(
+            classify_zip_entry("Gerber_DocumentLayer.GDL", "G04*%"),
+            Some(SourceFormat::Gerber)
+        );
+        assert_eq!(
+            classify_zip_entry("Drill_PTH_Through.DRL", "M48*"),
+            Some(SourceFormat::Excellon)
+        );
+        assert_eq!(
+            classify_zip_entry("board.pho", "%FSLAX46Y46*%\n%MOMM*%"),
+            Some(SourceFormat::Gerber)
+        );
+        assert_eq!(
+            classify_zip_entry("How-to-order-PCB.txt", "How to Order PCB"),
+            None
+        );
+        assert_eq!(
+            classify_zip_entry("drill.txt", "M48\nMETRIC\n"),
+            Some(SourceFormat::Excellon)
+        );
+    }
+
+    #[test]
+    fn macos_metadata_entries_are_skipped() {
+        assert!(skip_zip_entry("__MACOSX/._Gerber.GTL"));
+        assert!(skip_zip_entry("._Gerber.GTL"));
+        assert!(!skip_zip_entry("Gerber_TopLayer.GTL"));
+    }
 }

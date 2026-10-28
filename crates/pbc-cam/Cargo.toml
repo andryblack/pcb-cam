@@ -21,6 +21,7 @@ pbc-cam-core.workspace = true
 pbc-cam-engine.workspace = true
 rfd.workspace = true
 serde_json.workspace = true
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
 
 [package.metadata.bundle]
 name = "PBC-CAM"

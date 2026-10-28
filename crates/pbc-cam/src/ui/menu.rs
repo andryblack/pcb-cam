@@ -43,6 +43,10 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         ui.close();
                         app.import_excellon_dialog();
                     }
+                    if ui.button("Import Gerber ZIP…").clicked() {
+                        ui.close();
+                        app.import_zip_dialog();
+                    }
                     if ui.button("Load Demo Project").clicked() {
                         app.load_demo();
                         ui.close();

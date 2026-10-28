@@ -63,7 +63,7 @@ Implemented:
   - all enabled tasks in timeline order
   - automatic `T… M6` changes between different machining tools
 - Undo/redo for imports, layers and tasks
-- Native file dialogs, drag-and-drop import and a bundled demo project
+- Native file dialogs, drag-and-drop import, Gerber/Excellon ZIP archives and a bundled demo project
 - GUI-independent core crate and a command-driven engine crate
 - Cross-platform CI builds and a macOS application bundle script
 
@@ -131,6 +131,9 @@ cargo run -p pbc-cam -- --sample
 # Open fabrication files directly
 cargo run -p pbc-cam -- path/to/board-F_Cu.gbr path/to/board.drl
 
+# Or unpack/import every Gerber + drill file in a ZIP
+cargo run -p pbc-cam -- path/to/gerber-drill.zip
+
 # Optimized binary
 cargo build --release --locked -p pbc-cam
 ./target/release/pbc-cam
@@ -151,22 +154,23 @@ The script builds a release binary, assembles `PBC-CAM.app` with the app icon an
 
 1. Import Gerber layers with **File → Import Gerber…** or the **Gerber** toolbar button.
 2. Import an Excellon file with **File → Import Excellon…** or the **Excellon** button.
-3. Select a layer to inspect its **Source tools** in the browser and inspector.
+3. Or import a whole fabrication archive with **File → Import Gerber ZIP…**, the **ZIP** toolbar button, or by dropping a `.zip` on the window. Gerber and Excellon entries are imported automatically; README/order-instruction files are skipped.
+4. Select a layer to inspect its **Source tools** in the browser and inspector.
    These are read-only and come from the fabrication file.
-4. Open **Machining tools → + Machining tool** to add your own cutter, or select
+5. Open **Machining tools → + Machining tool** to add your own cutter, or select
    a library tool and use **Edit tool…** in the inspector. The library is saved
    automatically in the application settings.
-5. Add a task from **+ Task** in the toolbar/timeline or from the browser when a
+6. Add a task from **+ Task** in the toolbar/timeline or from the browser when a
    suitable layer is selected:
    - **Drilling** needs an Excellon layer.
    - **Contour cut** needs a Gerber layer with closed contours.
    - **Engraving** needs a Gerber layer with paths.
-6. Select the task. Edit it directly in the inspector: choose one
+7. Select the task. Edit it directly in the inspector: choose one
    **machining tool**, check the **source tools** for drilling, and change
    depths/feeds. Changes are applied online; there is no separate task-edit dialog.
    While selected, the task is drawn in red on the canvas — drilling positions
    for drill tasks, or the offset/engraving trajectory for milling tasks.
-7. Export:
+8. Export:
    - **File → Export Selected Task G-code…** or the inspector's **Export task G-code…** for one task.
    - **File → Export All Tasks G-code…** or the timeline's **Export all G-code** for the combined program with tool changes.
 

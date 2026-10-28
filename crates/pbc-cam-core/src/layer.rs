@@ -45,8 +45,8 @@ impl SourceFormat {
     pub const fn extensions(self) -> &'static [&'static str] {
         match self {
             Self::Gerber => &[
-                "gbr", "ger", "gtl", "gbl", "gts", "gbs", "gto", "gbo", "gko", "gm1", "gtp", "gbp",
-                "gba", "gta",
+                "gbr", "ger", "gtl", "gbl", "gts", "gbs", "gto", "gbo", "gko", "gdl", "gm1", "gtp",
+                "gbp", "gba", "gta",
             ],
             Self::Excellon => &["drl", "xln", "exc", "nc", "txt"],
         }
