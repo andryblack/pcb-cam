@@ -1,0 +1,34 @@
+[package]
+name = "pbc-cam"
+description = "PBC-CAM desktop application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+default-run = "pbc-cam"
+
+[[bin]]
+name = "pbc-cam"
+path = "src/main.rs"
+
+[dependencies]
+eframe.workspace = true
+env_logger.workspace = true
+log.workspace = true
+pbc-cam-core.workspace = true
+
+[package.metadata.bundle]
+name = "PBC-CAM"
+identifier = "com.pbc-cam.app"
+version = "0.1.0"
+category = "DeveloperTool"
+short_description = "CNC CAM for Gerber and Excellon PCB files"
+long_description = "PBC-CAM turns Gerber and Excellon fabrication data into CNC control programs. Cross-platform desktop application built with Rust and egui."
+copyright = "Copyright © 2026 andryblack"
+icon = [
+    "../../assets/icon.icns",
+    "../../assets/icon.ico",
+    "../../assets/icon.png",
+]
+osx_minimum_system_version = "11.0"

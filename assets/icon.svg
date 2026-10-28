@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#192029"/>
+      <stop offset="1" stop-color="#080b0f"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+
+  <rect x="32" y="32" width="960" height="960" rx="220" fill="url(#bg)" stroke="#7c5734" stroke-width="9"/>
+  <rect x="50" y="50" width="924" height="924" rx="204" fill="none" stroke="#e3a45e" stroke-opacity="0.10" stroke-width="3"/>
+
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <g filter="url(#glow)" opacity="0.55">
+      <path d="M120 360H330 M690 420H900" stroke="#e3a45e" stroke-width="30"/>
+      <path d="M330 760V220H570L690 340V420L570 540H330" stroke="#f3bf84" stroke-width="76"/>
+    </g>
+
+    <path d="M120 360H330 M690 420H900" stroke="#e3a45e" stroke-width="26"/>
+    <path d="M330 760V220H570L690 340V420L570 540H330" stroke="#f3bf84" stroke-width="68"/>
+  </g>
+
+  <g fill="#e3a45e">
+    <circle cx="120" cy="360" r="48"/>
+    <circle cx="900" cy="420" r="48"/>
+    <circle cx="330" cy="760" r="40"/>
+    <circle cx="570" cy="540" r="34"/>
+  </g>
+  <g fill="#0a0e12">
+    <circle cx="120" cy="360" r="22"/>
+    <circle cx="900" cy="420" r="22"/>
+    <circle cx="330" cy="760" r="18"/>
+    <circle cx="570" cy="540" r="15"/>
+  </g>
+</svg>

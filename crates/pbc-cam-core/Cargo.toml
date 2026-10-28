@@ -1,0 +1,10 @@
+[package]
+name = "pbc-cam-core"
+description = "Core project model and units for PBC-CAM"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
