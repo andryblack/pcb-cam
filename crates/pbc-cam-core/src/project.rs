@@ -249,7 +249,7 @@ impl Project {
         true
     }
 
-    /// Number of enabled drilling operations.
+    /// Number of enabled drilling tasks.
     pub fn enabled_drill_count(&self) -> usize {
         self.operations
             .iter()
@@ -257,6 +257,44 @@ impl Project {
                 operation.enabled() && matches!(operation.kind(), OperationKind::Drill(_))
             })
             .count()
+    }
+
+    /// Number of enabled tasks of any kind.
+    pub fn enabled_task_count(&self) -> usize {
+        self.operations
+            .iter()
+            .filter(|operation| operation.enabled())
+            .count()
+    }
+
+    /// Tasks in execution order (alias for [`Self::operations`]).
+    pub fn tasks(&self) -> &[Operation] {
+        &self.operations
+    }
+
+    /// Look up a task (alias for [`Self::operation`]).
+    pub fn task(&self, id: OperationId) -> Option<&Operation> {
+        self.operation(id)
+    }
+
+    /// Look up a task mutably (alias for [`Self::operation_mut`]).
+    pub fn task_mut(&mut self, id: OperationId) -> Option<&mut Operation> {
+        self.operation_mut(id)
+    }
+
+    /// Append a task (alias for [`Self::add_operation`]).
+    pub fn add_task(&mut self, name: impl Into<String>, kind: OperationKind) -> OperationId {
+        self.add_operation(name, kind)
+    }
+
+    /// Remove a task (alias for [`Self::remove_operation`]).
+    pub fn remove_task(&mut self, id: OperationId) -> bool {
+        self.remove_operation(id)
+    }
+
+    /// Move a task (alias for [`Self::move_operation`]).
+    pub fn move_task(&mut self, id: OperationId, target: usize) -> bool {
+        self.move_operation(id, target)
     }
 
     /// Preferred display unit.

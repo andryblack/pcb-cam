@@ -52,9 +52,13 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     ui.label(RichText::new("*").size(12.0).color(theme::COPPER));
                 }
                 ui.label(
-                    RichText::new(layer_count_label(app.project().layers().len()))
-                        .size(10.5)
-                        .color(theme::TEXT_MUTED),
+                    RichText::new(format!(
+                        "{}  ·  {}",
+                        layer_count_label(app.project().layers().len()),
+                        task_count_label(app.project().tasks().len())
+                    ))
+                    .size(10.5)
+                    .color(theme::TEXT_MUTED),
                 );
 
                 ui.add_space(4.0);
@@ -73,19 +77,25 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     app.import_excellon_dialog();
                 }
 
-                let can_add_drill = app.can_add_drill_operation();
-                let add_drill = ui.add_enabled(
-                    can_add_drill,
-                    Button::new(RichText::new("Drill").size(11.5)),
-                );
-                if add_drill.clicked() {
-                    app.add_drill_operation();
-                }
-                if !can_add_drill {
-                    add_drill.on_disabled_hover_text(
-                        "Import an Excellon layer with holes or slots first",
-                    );
-                }
+                ui.menu_button(RichText::new("+ Task").size(11.5), |ui| {
+                    let drill = ui.add_enabled(app.can_add_drill_task(), Button::new("Drilling"));
+                    if drill.clicked() {
+                        app.add_drill_task();
+                        ui.close();
+                    }
+                    let cutout =
+                        ui.add_enabled(app.can_add_cutout_task(), Button::new("Contour cut"));
+                    if cutout.clicked() {
+                        app.add_cutout_task();
+                        ui.close();
+                    }
+                    let engrave =
+                        ui.add_enabled(app.can_add_engrave_task(), Button::new("Engraving"));
+                    if engrave.clicked() {
+                        app.add_engrave_task();
+                        ui.close();
+                    }
+                });
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     unit_switch(ui, app);
@@ -177,5 +187,13 @@ fn layer_count_label(count: usize) -> String {
         "1 layer".to_owned()
     } else {
         format!("{count} layers")
+    }
+}
+
+fn task_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 task".to_owned()
+    } else {
+        format!("{count} tasks")
     }
 }

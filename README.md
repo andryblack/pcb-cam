@@ -4,18 +4,21 @@
 
 PBC-CAM turns Gerber and Excellon fabrication data into CNC control programs. It is a native desktop application written in Rust with [egui](https://github.com/emilk/egui)/[eframe](https://github.com/emilk/egui/tree/main/crates/eframe), inspired by [FlatCAM](http://flatcam.org/).
 
-![PBC-CAM application window with an imported demo board](docs/screenshot.png)
+![PBC-CAM application window with four fabrication layers and three tasks](docs/screenshot.png)
 
 ## Project status
 
-**Milestone 2: Gerber/Excellon import and drilling — complete.**
+**Milestone 3: task timeline and G-code — complete.**
 
-The app can import real Gerber and Excellon files, display the fabrication layers on an interactive board canvas, build a tool table from drill data, create drilling operations and export a CNC drilling program. Project save/load and the remaining toolpath operations are next.
+A project is built from source layers and an ordered list of **tasks**. Each task
+has its own type-specific settings. A CNC program can be generated from one
+selected task or from all enabled tasks in order, with automatic tool changes
+(`M6`) between different cutter diameters.
 
 Implemented:
 
 - Native application window on macOS, Windows and Linux (eframe + wgpu)
-- Dark CAD workspace with browser, canvas, inspector and operation timeline
+- Dark CAD workspace with browser, canvas, inspector and task timeline
 - Gerber RS-274X import using [`gerber_parser`](https://crates.io/crates/gerber_parser) for the tokenizer, command AST and aperture macros:
   - lines, arcs, regions and flashes
   - standard circle/rectangle/obround/polygon apertures
@@ -28,30 +31,38 @@ Implemented:
   - tool definitions, drill hits and `G85` slots
 - Canvas layer rendering with fit-to-project, pan/zoom, grid, axes and scale bar
 - Layer browser with visibility and selection; automatic drill tool table
-- Drilling operations in a project timeline with editable depth, retract, feed, plunge, dwell and spindle parameters
-- G-code export for drilling and slotting operations
-- Undo/redo for imports, layer changes, tools and operations
+- **Tasks** with type-specific settings:
+  - **Drilling** — all holes and slots from an Excellon layer, depth, retract, feed, plunge, dwell, spindle
+  - **Contour cut** — follows closed Gerber contours with an outside/inside/on-line cutter offset, tool diameter, depth and feeds
+  - **Engraving** — follows Gerber strokes, region outlines and flashed-pad outlines with a small tool, depth and feeds
+- Task timeline with selection, enable/disable, creation from the browser, toolbar, menu or timeline, and a type-specific parameter editor
+- G-code export:
+  - **selected task** only, for checking or running one operation
+  - **all enabled tasks** as one program, in timeline order, with `T… M6` tool changes and shared tool numbering by diameter
+- Undo/redo for imports, layers, tools and tasks
 - Native file dialogs, drag-and-drop import and a bundled demo project
 - GUI-independent core crate and a command-driven engine crate
 - Cross-platform CI builds and a macOS application bundle script
 
 Next:
 
-- Isolation routing with polygon union and offset passes
-- Board cut-out and tab handling
+- Engraving area fill / hatch patterns in addition to contour engraving
+- Contour cut tabs and multi-pass depth stepping
+- Isolation routing around copper
 - Project save/load (`.pbcam` or JSON)
 - G-code preview and machine simulation
 - Tool-table editing and machine/post-processor profiles
-- Larger Gerber/Excellon compatibility corpus and reference tests
+- A larger Gerber/Excellon compatibility corpus and reference tests
 
 ### Known limitations
 
-- Import geometry is flattened to millimetres at load time; source files are kept as the layer source path.
+- Import geometry is flattened to millimetres at load time; the source path is kept on the layer.
 - Gerber step-and-repeat, aperture blocks and negative image polarity are not fully supported yet; import reports warnings instead of failing.
-- Regions are filled as polygons; complex holes cut through a region are not yet boolean-subtracted.
-- Drilling is the only implemented CAM operation.
-- Projects are not saved yet; use the generated G-code as the durable output for now.
-- G-code is emitted in millimetres with explicit drill/plunge moves and does not yet include machine-specific headers, tool-change preferences or work offsets.
+- Regions are drawn as polygons; complex holes cut through a region are not boolean-subtracted.
+- Contour offsets use mitred joins without a full self-intersection cleanup. Simple board outlines work; very concave contours may need a proper offset kernel.
+- Engraving follows outlines and paths; filled/hardened area clearing is not implemented yet.
+- Projects are not saved yet; generated G-code is currently the durable output.
+- G-code is emitted in millimetres with explicit drill/plunge moves. It does not yet include machine-specific headers, tool-change preferences, work offsets or cutter compensation.
 
 ## Requirements
 
@@ -73,7 +84,7 @@ sudo apt-get install -y \
 # Development build and run
 cargo run -p pbc-cam
 
-# Start with the bundled demo board
+# Start with the bundled demo board (4 layers, 3 tasks)
 cargo run -p pbc-cam -- --sample
 
 # Open fabrication files directly
@@ -95,15 +106,22 @@ open dist/PBC-CAM.app
 
 The script builds a release binary, assembles `PBC-CAM.app` with the app icon and `Info.plist`, ad-hoc signs it and creates `dist/PBC-CAM-macos.zip`.
 
-### Working with a project
+## Working with tasks
 
 1. Import Gerber layers with **File → Import Gerber…** or the **Gerber** toolbar button.
 2. Import an Excellon file with **File → Import Excellon…** or the **Excellon** button. Drill tools are added to the browser automatically.
-3. Press **+ Drill** in the timeline (or use **Toolpaths → Add Drilling Operation**).
-4. Select the operation and edit its cut parameters in the inspector.
-5. Export the program with **File → Export G-code…** or the timeline's **Export G-code** button.
+3. Add a task from **+ Task** in the toolbar/timeline or from the browser when a suitable layer is selected:
+   - **Drilling** needs an Excellon layer.
+   - **Contour cut** needs a Gerber layer with closed contours.
+   - **Engraving** needs a Gerber layer with paths.
+4. Select the task and edit its parameters in the inspector with **Edit task…**. Each task type exposes only its own settings.
+5. Export:
+   - **File → Export Selected Task G-code…** or the inspector's **Export task G-code…** for one task.
+   - **File → Export All Tasks G-code…** or the timeline's **Export all G-code** for the combined program with tool changes.
 
-The demo project contains top copper, a rounded board outline with arcs and a drill file with three tools.
+The demo project contains top copper, a rounded board outline with arcs, a
+silkscreen legend and a drill file, set up as three tasks: drill, contour cut and
+engrave.
 
 ## Quality checks
 
@@ -120,7 +138,7 @@ cargo test --workspace --locked
 ├── crates/
 │   ├── pbc-cam/            # Desktop application (eframe/egui)
 │   │   └── src/
-│   │       ├── app.rs      # Application state, commands, dialogs
+│   │       ├── app.rs      # Application state, commands, task editor
 │   │       ├── theme.rs    # PBC-CAM palette and egui style
 │   │       ├── view.rs     # Canvas camera and unit formatting
 │   │       └── ui/         # Menu, toolbar, browser, timeline, viewport
@@ -128,11 +146,11 @@ cargo test --workspace --locked
 │   └── pbc-cam-core/       # GUI-independent domain and import
 │       └── src/
 │           ├── formats/    # Gerber and Excellon importers
-│           ├── geometry.rs # Points, paths, apertures, layer geometry
-│           ├── gcode.rs    # Drilling post-processor
+│           ├── geometry.rs # Points, paths, apertures, offset contours
+│           ├── gcode.rs    # Task and combined G-code post-processor
 │           ├── layer.rs    # Source layers and colours
-│           ├── operation.rs # CAM operation timeline
-│           ├── project.rs  # Project, tools and operations
+│           ├── operation.rs # Task timeline (Task aliases)
+│           ├── project.rs  # Project, tools and tasks
 │           └── units.rs    # Millimetres/inches
 ├── assets/
 │   ├── samples/            # Synthetic demo Gerber/Excellon project
@@ -152,9 +170,9 @@ pbc-cam-core  ←  pbc-cam-engine  ←  pbc-cam
 (domain/import)   (session/commands)   (egui front end)
 ```
 
-- **core** owns the project model, geometry, importers and G-code generation and has no GUI dependencies.
+- **core** owns the project model, geometry, importers, task types, contour offsets and G-code generation and has no GUI dependencies.
 - **engine** owns a `Session`, executes JSON commands such as `file.import_gerber`,
-  `operation.add_drill` and `edit.undo`, and keeps undo/redo snapshots.
+  `task.add_cutout`, `file.export_task_gcode` and `edit.undo`, and keeps undo/redo snapshots.
 - **pbc-cam** is a thin egui front end. It calls commands instead of mutating the
   project directly, so future CLI and automation clients can reuse the same registry.
 
@@ -165,10 +183,11 @@ pbc-cam-core  ←  pbc-cam-engine  ←  pbc-cam
 | `Cmd/Ctrl+N` | New project |
 | `Cmd/Ctrl+O` | Import Gerber |
 | `Cmd/Ctrl+Shift+O` | Import Excellon |
-| `Cmd/Ctrl+E` | Export G-code |
+| `Cmd/Ctrl+E` | Export selected task G-code |
+| `Cmd/Ctrl+Shift+E` | Export all tasks G-code |
 | `Cmd/Ctrl+Z` | Undo |
 | `Cmd/Ctrl+Shift+Z` | Redo |
-| `Delete` | Remove selected layer, tool or operation |
+| `Delete` | Remove selected layer, tool or task |
 | `F` or double-click | Fit project into the canvas |
 | `G` | Toggle grid |
 | `F1` | About |

@@ -418,6 +418,212 @@ impl GerberLayer {
     pub fn object_count(&self) -> usize {
         self.primitives.len()
     }
+
+    /// Closed contours suitable for a contour cut.
+    ///
+    /// Only closed strokes, paths whose last point meets their first, and
+    /// region outlines are returned. Flashes and open paths are ignored.
+    pub fn closed_contours(&self) -> Vec<Path> {
+        let mut contours = Vec::new();
+        for primitive in &self.primitives {
+            match primitive {
+                Primitive::Stroke { path, .. } => {
+                    if let Some(path) = normalized_contour(path, true) {
+                        contours.push(path);
+                    }
+                }
+                Primitive::Region {
+                    contours: region, ..
+                } => {
+                    for contour in region {
+                        if let Some(path) = normalized_contour(contour, true) {
+                            contours.push(path);
+                        }
+                    }
+                }
+                Primitive::Flash { .. } => {}
+            }
+        }
+        contours
+    }
+
+    /// Whether any closed contour is available without cloning the geometry.
+    pub fn has_closed_contours(&self) -> bool {
+        self.primitives.iter().any(|primitive| match primitive {
+            Primitive::Stroke { path, .. } => normalized_contour(path, true).is_some(),
+            Primitive::Region { contours, .. } => contours
+                .iter()
+                .any(|contour| normalized_contour(contour, true).is_some()),
+            Primitive::Flash { .. } => false,
+        })
+    }
+
+    /// Whether any engraving path is available without cloning the geometry.
+    pub fn has_engraving_paths(&self) -> bool {
+        self.primitives.iter().any(|primitive| match primitive {
+            Primitive::Stroke { path, .. } => normalized_contour(path, false).is_some(),
+            Primitive::Region { contours, .. } => contours
+                .iter()
+                .any(|contour| normalized_contour(contour, false).is_some()),
+            Primitive::Flash { .. } => true,
+        })
+    }
+
+    /// All paths suitable for engraving: open strokes, closed contours,
+    /// region outlines and flash outlines.
+    pub fn engraving_paths(&self) -> Vec<Path> {
+        let mut paths = Vec::new();
+        for primitive in &self.primitives {
+            match primitive {
+                Primitive::Stroke { path, .. } => {
+                    if let Some(path) = normalized_contour(path, false) {
+                        paths.push(path);
+                    }
+                }
+                Primitive::Region { contours, .. } => {
+                    for contour in contours {
+                        if let Some(path) = normalized_contour(contour, false) {
+                            paths.push(path);
+                        }
+                    }
+                }
+                Primitive::Flash {
+                    position,
+                    aperture,
+                    rotation_degrees,
+                    ..
+                } => {
+                    let points = aperture.outline(*position, *rotation_degrees);
+                    if points.len() >= 3 {
+                        paths.push(Path::closed(points));
+                    }
+                }
+            }
+        }
+        paths
+    }
+}
+
+/// Offset a closed polygon.
+///
+/// Positive `distance` moves the contour outwards, negative inwards, relative
+/// to the polygon orientation. Joins are mitred with a bounded miter length.
+/// Self-intersections in strongly concave contours are not resolved; this is
+/// sufficient for simple board outlines and a first CAM implementation.
+pub fn offset_closed_path(path: &Path, distance: f64) -> Option<Path> {
+    if !distance.is_finite() {
+        return None;
+    }
+    let mut points = path.points.clone();
+    if points.len() >= 2
+        && let (Some(first), Some(last)) = (points.first(), points.last())
+        && first.distance(*last) < 1e-7
+    {
+        points.pop();
+    }
+    if points.len() < 3 || distance.abs() < 1e-9 {
+        return Some(Path::closed(points));
+    }
+
+    let area = signed_area(&points);
+    if area.abs() < 1e-12 {
+        return None;
+    }
+    let outward_sign = if area > 0.0 { 1.0 } else { -1.0 };
+    let count = points.len();
+    let mut result = Vec::with_capacity(count);
+
+    for index in 0..count {
+        let current = points[index];
+        let previous = points[(index + count - 1) % count];
+        let next = points[(index + 1) % count];
+        let incoming = current - previous;
+        let outgoing = next - current;
+        if incoming.distance(Point::ORIGIN) < 1e-9 || outgoing.distance(Point::ORIGIN) < 1e-9 {
+            result.push(current);
+            continue;
+        }
+
+        let incoming_normal = normalize(Point::new(
+            incoming.y * outward_sign,
+            -incoming.x * outward_sign,
+        ));
+        let outgoing_normal = normalize(Point::new(
+            outgoing.y * outward_sign,
+            -outgoing.x * outward_sign,
+        ));
+        let mut miter = Point::new(
+            incoming_normal.x + outgoing_normal.x,
+            incoming_normal.y + outgoing_normal.y,
+        );
+        if miter.distance(Point::ORIGIN) < 1e-9 {
+            miter = incoming_normal;
+        } else {
+            miter = normalize(miter);
+        }
+        let denominator = miter.x * incoming_normal.x + miter.y * incoming_normal.y;
+        let scale = if denominator.abs() < 0.2 {
+            4.0 * distance
+        } else {
+            distance / denominator
+        };
+        let limit = 4.0 * distance.abs();
+        let scale = scale.clamp(-limit, limit);
+        result.push(Point::new(
+            current.x + miter.x * scale,
+            current.y + miter.y * scale,
+        ));
+    }
+
+    Some(Path::closed(result))
+}
+
+fn normalized_contour(path: &Path, closed_required: bool) -> Option<Path> {
+    if path.points.len() < 2 {
+        return None;
+    }
+    let mut points = path.points.clone();
+    let endpoints_meet = points.first().is_some_and(|first| {
+        points
+            .last()
+            .is_some_and(|last| first.distance(*last) < 1e-7)
+    });
+    let closed = path.closed || endpoints_meet;
+    if closed
+        && let (Some(first), Some(last)) = (points.first(), points.last())
+        && first.distance(*last) < 1e-7
+    {
+        points.pop();
+    }
+    if points.len() < 2 {
+        return None;
+    }
+    if closed && points.len() < 3 {
+        return None;
+    }
+    if closed_required && !closed {
+        return None;
+    }
+    Some(Path { points, closed })
+}
+
+fn signed_area(points: &[Point]) -> f64 {
+    let mut sum = 0.0;
+    for index in 0..points.len() {
+        let a = points[index];
+        let b = points[(index + 1) % points.len()];
+        sum += a.x * b.y - b.x * a.y;
+    }
+    sum * 0.5
+}
+
+fn normalize(point: Point) -> Point {
+    let length = point.x.hypot(point.y);
+    if length > 0.0 {
+        Point::new(point.x / length, point.y / length)
+    } else {
+        Point::ORIGIN
+    }
 }
 
 /// Tool definition embedded in an Excellon file.

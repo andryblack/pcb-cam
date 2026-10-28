@@ -3,8 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use pbc_cam_core::{
-    DrillOperation, LayerGeometry, LayerId, OperationId, OperationKind, Project, ToolKind,
-    UNTITLED_PROJECT, generate_drill_gcode, parse_excellon, parse_gerber,
+    ContourSide, CutoutOperation, DrillOperation, EngraveOperation, LayerGeometry, LayerId,
+    OperationId, OperationKind, Project, ToolKind, UNTITLED_PROJECT, generate_all_gcode,
+    generate_task_gcode, parse_excellon, parse_gerber,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -81,6 +82,62 @@ struct OperationAddDrillParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct OperationAddCutoutParams {
+    layer: u64,
+    name: Option<String>,
+    tool: Option<f64>,
+    side: Option<String>,
+    depth: Option<f64>,
+    retract: Option<f64>,
+    feed: Option<f64>,
+    plunge: Option<f64>,
+    spindle: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperationUpdateCutoutParams {
+    id: u64,
+    name: Option<String>,
+    tool: Option<f64>,
+    side: Option<String>,
+    depth: Option<f64>,
+    retract: Option<f64>,
+    feed: Option<f64>,
+    plunge: Option<f64>,
+    spindle: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperationAddEngraveParams {
+    layer: u64,
+    name: Option<String>,
+    tool: Option<f64>,
+    depth: Option<f64>,
+    retract: Option<f64>,
+    feed: Option<f64>,
+    plunge: Option<f64>,
+    spindle: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperationUpdateEngraveParams {
+    id: u64,
+    name: Option<String>,
+    tool: Option<f64>,
+    depth: Option<f64>,
+    retract: Option<f64>,
+    feed: Option<f64>,
+    plunge: Option<f64>,
+    spindle: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExportTaskGcodeParams {
+    path: PathBuf,
+    task: u64,
+}
+
+#[derive(Debug, Deserialize)]
 struct OperationUpdateDrillParams {
     id: u64,
     name: Option<String>,
@@ -112,7 +169,6 @@ struct OperationMoveParams {
 #[derive(Debug, Deserialize)]
 struct ExportGcodeParams {
     path: PathBuf,
-    operation: Option<u64>,
 }
 
 pub(crate) fn project_new(session: &mut Session, params: &Value) -> Result<Value, String> {
@@ -326,6 +382,183 @@ pub(crate) fn add_drill_enabled(session: &Session) -> Result<(), String> {
     }
 }
 
+pub(crate) fn add_cutout_enabled(session: &Session) -> Result<(), String> {
+    if session.project().layers().iter().any(|layer| {
+        matches!(
+            layer.geometry(),
+            LayerGeometry::Gerber(gerber) if gerber.has_closed_contours()
+        )
+    }) {
+        Ok(())
+    } else {
+        Err("import a Gerber layer with closed contours first".into())
+    }
+}
+
+pub(crate) fn add_engrave_enabled(session: &Session) -> Result<(), String> {
+    if session.project().layers().iter().any(|layer| {
+        matches!(
+            layer.geometry(),
+            LayerGeometry::Gerber(gerber) if gerber.has_engraving_paths()
+        )
+    }) {
+        Ok(())
+    } else {
+        Err("import a Gerber layer with paths first".into())
+    }
+}
+
+pub(crate) fn operation_add_cutout(session: &mut Session, params: &Value) -> Result<Value, String> {
+    let params: OperationAddCutoutParams = parse_params(params)?;
+    let layer_id = LayerId::new(params.layer);
+    let project = session.project_mut();
+    let layer = project
+        .layer(layer_id)
+        .ok_or_else(|| format!("layer {} does not exist", params.layer))?;
+    let LayerGeometry::Gerber(gerber) = layer.geometry() else {
+        return Err("contour cut requires a Gerber layer".into());
+    };
+    if !gerber.has_closed_contours() {
+        return Err("the selected layer contains no closed contours".into());
+    }
+    let default_name = format!("Cut {}", layer.name());
+    let name = params.name.unwrap_or(default_name);
+
+    let mut cutout = CutoutOperation::new(layer_id);
+    if let Some(tool) = params.tool {
+        cutout.tool_diameter_mm = tool;
+    }
+    if let Some(side) = params.side.as_deref() {
+        cutout.side = parse_side(side)?;
+    }
+    apply_milling_overrides(
+        &mut cutout.depth_mm,
+        &mut cutout.retract_mm,
+        &mut cutout.feed_mm_min,
+        &mut cutout.plunge_mm_min,
+        &mut cutout.spindle_rpm,
+        params.depth,
+        params.retract,
+        params.feed,
+        params.plunge,
+        params.spindle,
+    );
+    cutout.validate()?;
+    let id = project.add_task(name.clone(), OperationKind::Cutout(cutout));
+    Ok(json!({"id": id.value(), "name": name}))
+}
+
+pub(crate) fn operation_update_cutout(
+    session: &mut Session,
+    params: &Value,
+) -> Result<Value, String> {
+    let params: OperationUpdateCutoutParams = parse_params(params)?;
+    let task = session
+        .project_mut()
+        .task_mut(OperationId::new(params.id))
+        .ok_or_else(|| format!("task {} does not exist", params.id))?;
+    if let Some(name) = params.name {
+        task.set_name(name);
+    }
+    let OperationKind::Cutout(cutout) = task.kind_mut() else {
+        return Err("task is not a contour cut".into());
+    };
+    if let Some(tool) = params.tool {
+        cutout.tool_diameter_mm = tool;
+    }
+    if let Some(side) = params.side.as_deref() {
+        cutout.side = parse_side(side)?;
+    }
+    apply_milling_overrides(
+        &mut cutout.depth_mm,
+        &mut cutout.retract_mm,
+        &mut cutout.feed_mm_min,
+        &mut cutout.plunge_mm_min,
+        &mut cutout.spindle_rpm,
+        params.depth,
+        params.retract,
+        params.feed,
+        params.plunge,
+        params.spindle,
+    );
+    cutout.validate()?;
+    Ok(json!({"id": params.id}))
+}
+
+pub(crate) fn operation_add_engrave(
+    session: &mut Session,
+    params: &Value,
+) -> Result<Value, String> {
+    let params: OperationAddEngraveParams = parse_params(params)?;
+    let layer_id = LayerId::new(params.layer);
+    let project = session.project_mut();
+    let layer = project
+        .layer(layer_id)
+        .ok_or_else(|| format!("layer {} does not exist", params.layer))?;
+    let LayerGeometry::Gerber(gerber) = layer.geometry() else {
+        return Err("engraving requires a Gerber layer".into());
+    };
+    if !gerber.has_engraving_paths() {
+        return Err("the selected layer contains no paths".into());
+    }
+    let default_name = format!("Engrave {}", layer.name());
+    let name = params.name.unwrap_or(default_name);
+
+    let mut engrave = EngraveOperation::new(layer_id);
+    if let Some(tool) = params.tool {
+        engrave.tool_diameter_mm = tool;
+    }
+    apply_milling_overrides(
+        &mut engrave.depth_mm,
+        &mut engrave.retract_mm,
+        &mut engrave.feed_mm_min,
+        &mut engrave.plunge_mm_min,
+        &mut engrave.spindle_rpm,
+        params.depth,
+        params.retract,
+        params.feed,
+        params.plunge,
+        params.spindle,
+    );
+    engrave.validate()?;
+    let id = project.add_task(name.clone(), OperationKind::Engrave(engrave));
+    Ok(json!({"id": id.value(), "name": name}))
+}
+
+pub(crate) fn operation_update_engrave(
+    session: &mut Session,
+    params: &Value,
+) -> Result<Value, String> {
+    let params: OperationUpdateEngraveParams = parse_params(params)?;
+    let task = session
+        .project_mut()
+        .task_mut(OperationId::new(params.id))
+        .ok_or_else(|| format!("task {} does not exist", params.id))?;
+    if let Some(name) = params.name {
+        task.set_name(name);
+    }
+    let OperationKind::Engrave(engrave) = task.kind_mut() else {
+        return Err("task is not an engraving task".into());
+    };
+    if let Some(tool) = params.tool {
+        engrave.tool_diameter_mm = tool;
+    }
+    apply_milling_overrides(
+        &mut engrave.depth_mm,
+        &mut engrave.retract_mm,
+        &mut engrave.feed_mm_min,
+        &mut engrave.plunge_mm_min,
+        &mut engrave.spindle_rpm,
+        params.depth,
+        params.retract,
+        params.feed,
+        params.plunge,
+        params.spindle,
+    );
+    engrave.validate()?;
+    Ok(json!({"id": params.id}))
+}
+
 pub(crate) fn operation_add_drill(session: &mut Session, params: &Value) -> Result<Value, String> {
     let params: OperationAddDrillParams = parse_params(params)?;
     let layer_id = LayerId::new(params.layer);
@@ -334,7 +567,7 @@ pub(crate) fn operation_add_drill(session: &mut Session, params: &Value) -> Resu
         .layer(layer_id)
         .ok_or_else(|| format!("layer {} does not exist", params.layer))?;
     let LayerGeometry::Excellon(excellon) = layer.geometry() else {
-        return Err("drilling operations require an Excellon layer".into());
+        return Err("drilling tasks require an Excellon layer".into());
     };
     if excellon.holes.is_empty() && excellon.slots.is_empty() {
         return Err("the selected Excellon layer has no holes or slots".into());
@@ -378,7 +611,9 @@ pub(crate) fn operation_update_drill(
     if let Some(name) = params.name {
         operation.set_name(name);
     }
-    let OperationKind::Drill(drill) = operation.kind_mut();
+    let OperationKind::Drill(drill) = operation.kind_mut() else {
+        return Err("task is not a drilling task".into());
+    };
     if let Some(depth) = params.depth {
         drill.depth_mm = depth;
     }
@@ -436,40 +671,62 @@ pub(crate) fn operation_move(session: &mut Session, params: &Value) -> Result<Va
     Ok(json!({"id": params.id, "to": params.to}))
 }
 
-pub(crate) fn export_gcode_enabled(session: &Session) -> Result<(), String> {
-    if session.project().enabled_drill_count() == 0 {
-        Err("add and enable a drilling operation first".into())
+pub(crate) fn export_task_gcode_enabled(session: &Session) -> Result<(), String> {
+    if session.project().enabled_task_count() == 0 {
+        Err("add and enable a task first".into())
     } else {
         Ok(())
     }
 }
 
+pub(crate) fn export_gcode_enabled(session: &Session) -> Result<(), String> {
+    if session.project().enabled_task_count() == 0 {
+        Err("add and enable a task first".into())
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn export_task_gcode(session: &mut Session, params: &Value) -> Result<Value, String> {
+    let params: ExportTaskGcodeParams = parse_params(params)?;
+    let project = session.project();
+    let task = project
+        .task(OperationId::new(params.task))
+        .ok_or_else(|| format!("task {} does not exist", params.task))?;
+    let program = generate_task_gcode(project, task)?;
+    write_program(&params.path, &program)?;
+    Ok(program_json(
+        &params.path,
+        &program,
+        Some(task.id().value()),
+    ))
+}
+
 pub(crate) fn export_gcode(session: &mut Session, params: &Value) -> Result<Value, String> {
     let params: ExportGcodeParams = parse_params(params)?;
     let project = session.project();
-    let operation = match params.operation {
-        Some(id) => project
-            .operation(OperationId::new(id))
-            .ok_or_else(|| format!("operation {id} does not exist"))?,
-        None => project
-            .operations()
-            .iter()
-            .find(|operation| {
-                operation.enabled() && matches!(operation.kind(), OperationKind::Drill(_))
-            })
-            .ok_or_else(|| "no enabled drilling operation".to_owned())?,
-    };
-    let program = generate_drill_gcode(project, operation)?;
-    std::fs::write(&params.path, program.text.as_bytes())
-        .map_err(|error| format!("cannot write `{}`: {error}", params.path.display()))?;
-    Ok(json!({
-        "path": params.path,
-        "operation": operation.id().value(),
+    let program = generate_all_gcode(project)?;
+    write_program(&params.path, &program)?;
+    Ok(program_json(&params.path, &program, None))
+}
+
+fn write_program(path: &Path, program: &pbc_cam_core::GcodeProgram) -> Result<(), String> {
+    std::fs::write(path, program.text.as_bytes())
+        .map_err(|error| format!("cannot write `{}`: {error}", path.display()))
+}
+
+fn program_json(path: &Path, program: &pbc_cam_core::GcodeProgram, task: Option<u64>) -> Value {
+    json!({
+        "path": path,
+        "task": task,
         "tools": program.tool_count,
+        "tasks": program.task_count,
         "holes": program.hole_count,
         "slots": program.slot_count,
+        "paths": program.path_count,
+        "cut_length_mm": program.cut_length_mm,
         "bytes": program.text.len(),
-    }))
+    })
 }
 
 pub(crate) fn undo(session: &mut Session, _params: &Value) -> Result<Value, String> {
@@ -490,6 +747,45 @@ pub(crate) fn redo(session: &mut Session, _params: &Value) -> Result<Value, Stri
         "can_undo": session.can_undo(),
         "can_redo": session.can_redo(),
     }))
+}
+
+fn parse_side(side: &str) -> Result<ContourSide, String> {
+    match side {
+        "outside" => Ok(ContourSide::Outside),
+        "inside" => Ok(ContourSide::Inside),
+        "on_line" | "online" => Ok(ContourSide::OnLine),
+        other => Err(format!("unknown contour side `{other}`")),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_milling_overrides(
+    depth: &mut f64,
+    retract: &mut f64,
+    feed: &mut f64,
+    plunge: &mut f64,
+    spindle: &mut u32,
+    new_depth: Option<f64>,
+    new_retract: Option<f64>,
+    new_feed: Option<f64>,
+    new_plunge: Option<f64>,
+    new_spindle: Option<u32>,
+) {
+    if let Some(value) = new_depth {
+        *depth = value;
+    }
+    if let Some(value) = new_retract {
+        *retract = value;
+    }
+    if let Some(value) = new_feed {
+        *feed = value;
+    }
+    if let Some(value) = new_plunge {
+        *plunge = value;
+    }
+    if let Some(value) = new_spindle {
+        *spindle = value;
+    }
 }
 
 fn parse_params<T: DeserializeOwned>(params: &Value) -> Result<T, String> {
@@ -636,10 +932,7 @@ M30
             .unwrap();
         let layer = import["layer"].as_u64().unwrap();
         let operation = session
-            .execute(
-                "operation.add_drill",
-                &json!({"layer": layer, "depth": 1.2}),
-            )
+            .execute("task.add_drill", &json!({"layer": layer, "depth": 1.2}))
             .unwrap();
         assert_eq!(session.project().operations().len(), 1);
         assert_eq!(operation["name"], "Drill Drills");
@@ -667,10 +960,7 @@ M30
         let layer = import["layer"].as_u64().unwrap();
         let before = session.project().clone();
         let error = session
-            .execute(
-                "operation.add_drill",
-                &json!({"layer": layer, "depth": 0.0}),
-            )
+            .execute("task.add_drill", &json!({"layer": layer, "depth": 0.0}))
             .unwrap_err();
         assert!(error.to_string().contains("depth"));
         assert_eq!(session.project().layers().len(), before.layers().len());

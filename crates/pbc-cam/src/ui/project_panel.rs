@@ -69,9 +69,9 @@ fn project_card(ui: &mut Ui, app: &PbcCam) {
                 );
                 ui.label(
                     RichText::new(format!(
-                        "{} operation{}",
-                        app.project().operations().len(),
-                        if app.project().operations().len() == 1 {
+                        "{} task{}",
+                        app.project().tasks().len(),
+                        if app.project().tasks().len() == 1 {
                             ""
                         } else {
                             "s"
@@ -254,7 +254,7 @@ fn tool_list(ui: &mut Ui, app: &mut PbcCam) {
 }
 
 fn output_section(ui: &mut Ui, app: &mut PbcCam) {
-    let enabled = app.project().enabled_drill_count();
+    let enabled = app.project().enabled_task_count();
     widgets::card_frame().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(
@@ -266,14 +266,14 @@ fn output_section(ui: &mut Ui, app: &mut PbcCam) {
         ui.add_space(2.0);
         if enabled == 0 {
             ui.label(
-                RichText::new("Add an enabled drilling operation to generate a G-code program.")
+                RichText::new("Add and enable a task to generate a combined G-code program.")
                     .size(10.5)
                     .color(theme::TEXT_FAINT),
             );
         } else {
             ui.label(
                 RichText::new(format!(
-                    "{enabled} enabled drill operation{} ready",
+                    "{enabled} enabled task{} ready",
                     if enabled == 1 { "" } else { "s" }
                 ))
                 .size(10.5)
@@ -282,10 +282,10 @@ fn output_section(ui: &mut Ui, app: &mut PbcCam) {
             ui.add_space(6.0);
             let export = ui.add_sized(
                 egui::vec2(ui.available_width(), 25.0),
-                Button::new(RichText::new("Export G-code…").size(11.0)),
+                Button::new(RichText::new("Export all G-code…").size(11.0)),
             );
             if export.clicked() {
-                app.export_gcode_dialog();
+                app.export_all_gcode_dialog();
             }
         }
     });

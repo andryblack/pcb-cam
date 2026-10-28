@@ -2,9 +2,10 @@
 
 use std::path::PathBuf;
 
-use eframe::egui::{self, Align2, Key, Modifiers, RichText, Stroke, Vec2};
+use eframe::egui::{self, Align2, Button, Key, Modifiers, RichText, Stroke, Vec2};
 use pbc_cam_core::{
-    DrillOperation, LayerGeometry, LayerId, OperationId, OperationKind, SourceFormat, ToolId, Unit,
+    ContourSide, LayerGeometry, LayerId, OperationId, OperationKind, Project, SourceFormat, Task,
+    ToolId, Unit,
 };
 use pbc_cam_engine::{Session, find_command};
 use serde_json::{Value, json};
@@ -53,7 +54,7 @@ pub(crate) const SHORTCUT_REDO: &str = if cfg!(target_os = "macos") {
 pub(crate) enum Selection {
     Layer(LayerId),
     Tool(ToolId),
-    Operation(OperationId),
+    Task(OperationId),
 }
 
 /// Toggles that control the workspace chrome.
@@ -78,43 +79,85 @@ impl Default for ViewSettings {
     }
 }
 
-/// A modal draft of a drilling operation's parameters.
+/// The type-specific fields of the task editor.
 #[derive(Debug, Clone)]
-pub(crate) struct OperationEditor {
+pub(crate) enum TaskEditorKind {
+    Drill {
+        depth: f64,
+        retract: f64,
+        feed: f64,
+        plunge: f64,
+        dwell: f64,
+        spindle: u32,
+    },
+    Cutout {
+        tool: f64,
+        side: ContourSide,
+        depth: f64,
+        retract: f64,
+        feed: f64,
+        plunge: f64,
+        spindle: u32,
+    },
+    Engrave {
+        tool: f64,
+        depth: f64,
+        retract: f64,
+        feed: f64,
+        plunge: f64,
+        spindle: u32,
+    },
+}
+
+/// A modal draft of one task's parameters.
+#[derive(Debug, Clone)]
+pub(crate) struct TaskEditor {
     pub(crate) id: OperationId,
     pub(crate) name: String,
     pub(crate) layer: LayerId,
     pub(crate) layer_name: String,
-    pub(crate) depth: f64,
-    pub(crate) retract: f64,
-    pub(crate) feed: f64,
-    pub(crate) plunge: f64,
-    pub(crate) dwell: f64,
-    pub(crate) spindle: u32,
+    pub(crate) kind: TaskEditorKind,
     pub(crate) error: Option<String>,
 }
 
-impl OperationEditor {
-    fn from_drill(
-        id: OperationId,
-        name: &str,
-        layer: LayerId,
-        layer_name: &str,
-        drill: &DrillOperation,
-    ) -> Self {
-        Self {
-            id,
-            name: name.to_owned(),
-            layer,
-            layer_name: layer_name.to_owned(),
-            depth: drill.depth_mm,
-            retract: drill.retract_mm,
-            feed: drill.feed_mm_min,
-            plunge: drill.plunge_mm_min,
-            dwell: drill.dwell_s,
-            spindle: drill.spindle_rpm,
+impl TaskEditor {
+    fn from_task(project: &Project, task: &Task) -> Option<Self> {
+        let layer = project.layer(task.source_layer())?;
+        let kind = match task.kind() {
+            OperationKind::Drill(drill) => TaskEditorKind::Drill {
+                depth: drill.depth_mm,
+                retract: drill.retract_mm,
+                feed: drill.feed_mm_min,
+                plunge: drill.plunge_mm_min,
+                dwell: drill.dwell_s,
+                spindle: drill.spindle_rpm,
+            },
+            OperationKind::Cutout(cutout) => TaskEditorKind::Cutout {
+                tool: cutout.tool_diameter_mm,
+                side: cutout.side,
+                depth: cutout.depth_mm,
+                retract: cutout.retract_mm,
+                feed: cutout.feed_mm_min,
+                plunge: cutout.plunge_mm_min,
+                spindle: cutout.spindle_rpm,
+            },
+            OperationKind::Engrave(engrave) => TaskEditorKind::Engrave {
+                tool: engrave.tool_diameter_mm,
+                depth: engrave.depth_mm,
+                retract: engrave.retract_mm,
+                feed: engrave.feed_mm_min,
+                plunge: engrave.plunge_mm_min,
+                spindle: engrave.spindle_rpm,
+            },
+        };
+        Some(Self {
+            id: task.id(),
+            name: task.name().to_owned(),
+            layer: task.source_layer(),
+            layer_name: layer.name().to_owned(),
+            kind,
             error: None,
-        }
+        })
     }
 }
 
@@ -129,7 +172,7 @@ pub struct PbcCam {
     pub(crate) status_error: bool,
     pub(crate) about_open: bool,
     pub(crate) shortcuts_open: bool,
-    pub(crate) operation_editor: Option<OperationEditor>,
+    pub(crate) task_editor: Option<TaskEditor>,
     pub(crate) fit_requested: bool,
     window_title: String,
 }
@@ -149,7 +192,7 @@ impl PbcCam {
             status_error: false,
             about_open: false,
             shortcuts_open: false,
-            operation_editor: None,
+            task_editor: None,
             fit_requested: false,
             window_title: WINDOW_TITLE.to_owned(),
         }
@@ -177,7 +220,7 @@ impl PbcCam {
         let valid = match self.selection {
             Some(Selection::Layer(id)) => self.project().layer(id).is_some(),
             Some(Selection::Tool(id)) => self.project().tool(id).is_some(),
-            Some(Selection::Operation(id)) => self.project().operation(id).is_some(),
+            Some(Selection::Task(id)) => self.project().task(id).is_some(),
             None => true,
         };
         if !valid {
@@ -201,7 +244,7 @@ impl PbcCam {
             .is_some()
         {
             self.selection = None;
-            self.operation_editor = None;
+            self.task_editor = None;
             self.view.reset();
             self.fit_requested = false;
             self.set_status("New project created");
@@ -210,14 +253,14 @@ impl PbcCam {
 
     pub(crate) fn undo(&mut self) {
         if self.run_command("edit.undo", json!({})).is_some() {
-            self.operation_editor = None;
+            self.task_editor = None;
             self.set_status("Undo");
         }
     }
 
     pub(crate) fn redo(&mut self) {
         if self.run_command("edit.redo", json!({})).is_some() {
-            self.operation_editor = None;
+            self.task_editor = None;
             self.set_status("Redo");
         }
     }
@@ -319,31 +362,51 @@ impl PbcCam {
         ));
     }
 
-    pub(crate) fn add_drill_operation(&mut self) {
-        let layer = self.drill_layer_for_new_operation();
+    pub(crate) fn add_drill_task(&mut self) {
+        let layer = self.drill_layer_for_new_task();
+        self.add_task_with_layer("task.add_drill", layer, "Drilling");
+    }
+
+    pub(crate) fn add_cutout_task(&mut self) {
+        let layer = self.cutout_layer_for_new_task();
+        self.add_task_with_layer("task.add_cutout", layer, "Contour cut");
+    }
+
+    pub(crate) fn add_engrave_task(&mut self) {
+        let layer = self.engrave_layer_for_new_task();
+        self.add_task_with_layer("task.add_engrave", layer, "Engraving");
+    }
+
+    fn add_task_with_layer(&mut self, command: &str, layer: Option<LayerId>, label: &str) {
         let Some(layer) = layer else {
-            self.set_error("Import an Excellon layer with drills first");
+            self.set_error(format!("No suitable source layer for a {label} task"));
             return;
         };
-        if let Some(value) =
-            self.run_command("operation.add_drill", json!({"layer": layer.value()}))
-        {
+        let layer_name = self
+            .project()
+            .layer(layer)
+            .map_or("layer".to_owned(), |layer| layer.name().to_owned());
+        if let Some(value) = self.run_command(command, json!({"layer": layer.value()})) {
             if let Some(id) = value.get("id").and_then(Value::as_u64) {
-                self.selection = Some(Selection::Operation(OperationId::new(id)));
+                self.selection = Some(Selection::Task(OperationId::new(id)));
             }
-            let layer_name = self
-                .project()
-                .layer(layer)
-                .map_or("drills".to_owned(), |layer| layer.name().to_owned());
-            self.set_status(format!("Drilling operation added for {layer_name}"));
+            self.set_status(format!("{label} task added for {layer_name}"));
         }
     }
 
-    pub(crate) fn can_add_drill_operation(&self) -> bool {
-        self.drill_layer_for_new_operation().is_some()
+    pub(crate) fn can_add_drill_task(&self) -> bool {
+        self.drill_layer_for_new_task().is_some()
     }
 
-    fn drill_layer_for_new_operation(&self) -> Option<LayerId> {
+    pub(crate) fn can_add_cutout_task(&self) -> bool {
+        self.cutout_layer_for_new_task().is_some()
+    }
+
+    pub(crate) fn can_add_engrave_task(&self) -> bool {
+        self.engrave_layer_for_new_task().is_some()
+    }
+
+    fn drill_layer_for_new_task(&self) -> Option<LayerId> {
         if let Some(Selection::Layer(id)) = self.selection
             && let Some(layer) = self.project().layer(id)
             && matches!(
@@ -367,59 +430,135 @@ impl PbcCam {
             .map(|layer| layer.id())
     }
 
-    pub(crate) fn export_gcode_dialog(&mut self) {
-        if self.project().enabled_drill_count() == 0 {
-            self.set_error("Add and enable a drilling operation first");
-            return;
+    fn cutout_layer_for_new_task(&self) -> Option<LayerId> {
+        if let Some(Selection::Layer(id)) = self.selection
+            && self.layer_has_closed_contours(id)
+        {
+            return Some(id);
         }
-        let mut dialog = rfd::FileDialog::new()
-            .set_title("Export G-code")
-            .add_filter("G-code", &["nc", "gcode", "tap"]);
-        let default_name = format!(
-            "{}.nc",
-            self.project()
-                .name()
-                .chars()
-                .map(|ch| {
-                    if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                        ch
-                    } else {
-                        '_'
-                    }
-                })
-                .collect::<String>()
-                .trim_matches('_')
-                .to_owned()
-        );
-        let default_name = if default_name == ".nc" {
-            "board.nc".to_owned()
-        } else {
-            default_name
-        };
-        dialog = dialog.set_file_name(default_name);
-        let Some(path) = dialog.save_file() else {
+        let layers = self.project().layers();
+        layers
+            .iter()
+            .find(|layer| {
+                let name = layer.name().to_ascii_lowercase();
+                (name.contains("edge")
+                    || name.contains("outline")
+                    || name.contains("gm1")
+                    || name.contains("gko"))
+                    && self.layer_has_closed_contours(layer.id())
+            })
+            .or_else(|| {
+                layers
+                    .iter()
+                    .find(|layer| self.layer_has_closed_contours(layer.id()))
+            })
+            .map(|layer| layer.id())
+    }
+
+    fn engrave_layer_for_new_task(&self) -> Option<LayerId> {
+        if let Some(Selection::Layer(id)) = self.selection
+            && self.layer_has_paths(id)
+        {
+            return Some(id);
+        }
+        let layers = self.project().layers();
+        layers
+            .iter()
+            .find(|layer| {
+                let name = layer.name().to_ascii_lowercase();
+                (name.contains("silk")
+                    || name.contains("gto")
+                    || name.contains("gbo")
+                    || name.contains("text"))
+                    && self.layer_has_paths(layer.id())
+            })
+            .or_else(|| layers.iter().find(|layer| self.layer_has_paths(layer.id())))
+            .map(|layer| layer.id())
+    }
+
+    fn layer_has_closed_contours(&self, id: LayerId) -> bool {
+        self.project()
+            .layer(id)
+            .is_some_and(|layer| match layer.geometry() {
+                LayerGeometry::Gerber(gerber) => gerber.has_closed_contours(),
+                LayerGeometry::Excellon(_) => false,
+            })
+    }
+
+    fn layer_has_paths(&self, id: LayerId) -> bool {
+        self.project()
+            .layer(id)
+            .is_some_and(|layer| match layer.geometry() {
+                LayerGeometry::Gerber(gerber) => gerber.has_engraving_paths(),
+                LayerGeometry::Excellon(_) => false,
+            })
+    }
+
+    pub(crate) fn export_task_gcode_dialog(&mut self) {
+        let Some(Selection::Task(id)) = self.selection else {
+            self.set_error("Select a task to export");
             return;
         };
-        let operation = match self.selection {
-            Some(Selection::Operation(id))
-                if self
-                    .project()
-                    .operation(id)
-                    .is_some_and(|operation| operation.enabled()) =>
-            {
-                Some(id.value())
-            }
-            _ => None,
+        let Some(task) = self.project().task(id) else {
+            return;
+        };
+        let Some(path) = self.choose_gcode_path(&format!("-{}", task.kind_label())) else {
+            return;
         };
         if let Some(value) = self.run_command(
-            "file.export_gcode",
-            json!({"path": path, "operation": operation}),
+            "file.export_task_gcode",
+            json!({"path": path, "task": id.value()}),
         ) {
-            let holes = value.get("holes").and_then(Value::as_u64).unwrap_or(0);
-            let slots = value.get("slots").and_then(Value::as_u64).unwrap_or(0);
-            self.set_status(format!("G-code exported · {holes} holes · {slots} slots"));
-            log::info!("exported G-code: {value}");
+            self.report_export(&value, "Task");
         }
+    }
+
+    pub(crate) fn export_all_gcode_dialog(&mut self) {
+        if self.project().enabled_task_count() == 0 {
+            self.set_error("Add and enable a task first");
+            return;
+        }
+        let Some(path) = self.choose_gcode_path("-all") else {
+            return;
+        };
+        if let Some(value) = self.run_command("file.export_gcode", json!({"path": path})) {
+            self.report_export(&value, "Combined");
+        }
+    }
+
+    fn choose_gcode_path(&self, suffix: &str) -> Option<PathBuf> {
+        let base: String = self
+            .project()
+            .name()
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let base = base.trim_matches('_');
+        let base = if base.is_empty() { "board" } else { base };
+        let default_name = format!("{base}{suffix}.nc");
+        rfd::FileDialog::new()
+            .set_title("Export G-code")
+            .add_filter("G-code", &["nc", "gcode", "tap"])
+            .set_file_name(default_name)
+            .save_file()
+    }
+
+    fn report_export(&mut self, value: &Value, kind: &str) {
+        let tasks = value.get("tasks").and_then(Value::as_u64).unwrap_or(0);
+        let tools = value.get("tools").and_then(Value::as_u64).unwrap_or(0);
+        let paths = value.get("paths").and_then(Value::as_u64).unwrap_or(0);
+        let holes = value.get("holes").and_then(Value::as_u64).unwrap_or(0);
+        let slots = value.get("slots").and_then(Value::as_u64).unwrap_or(0);
+        self.set_status(format!(
+            "{kind} G-code exported · {tasks} tasks · {tools} tools · {holes} holes · {slots} slots · {paths} paths"
+        ));
+        log::info!("exported {kind} G-code: {value}");
     }
 
     pub(crate) fn remove_selection(&mut self) {
@@ -429,43 +568,31 @@ impl PbcCam {
         let result = match selection {
             Selection::Layer(id) => self.run_command("layer.remove", json!({"id": id.value()})),
             Selection::Tool(id) => self.run_command("tool.remove", json!({"id": id.value()})),
-            Selection::Operation(id) => {
-                self.run_command("operation.remove", json!({"id": id.value()}))
-            }
+            Selection::Task(id) => self.run_command("task.remove", json!({"id": id.value()})),
         };
         if result.is_some() {
             self.selection = None;
-            self.operation_editor = None;
+            self.task_editor = None;
             self.set_status("Removed");
         }
     }
 
-    pub(crate) fn open_operation_editor(&mut self) {
-        let Some(Selection::Operation(id)) = self.selection else {
-            self.set_error("Select a drilling operation first");
+    pub(crate) fn open_task_editor(&mut self) {
+        let Some(Selection::Task(id)) = self.selection else {
+            self.set_error("Select a task first");
             return;
         };
-        let Some(operation) = self.project().operation(id) else {
+        let Some(task) = self.project().task(id) else {
             return;
         };
-        let OperationKind::Drill(drill) = operation.kind();
-        let layer_name = self
-            .project()
-            .layer(drill.layer)
-            .map_or("Excellon layer".to_owned(), |layer| layer.name().to_owned());
-        self.operation_editor = Some(OperationEditor::from_drill(
-            id,
-            operation.name(),
-            drill.layer,
-            &layer_name,
-            drill,
-        ));
+        self.task_editor = TaskEditor::from_task(self.project(), task);
     }
 
     /// Load the bundled demo project.
     pub fn load_demo(&mut self) {
         let top = include_str!("../../../assets/samples/demo-F_Cu.gbr");
         let outline = include_str!("../../../assets/samples/demo-Edge_Cuts.gbr");
+        let silk = include_str!("../../../assets/samples/demo-Silkscreen.gbr");
         let drills = include_str!("../../../assets/samples/demo.drl");
 
         if self
@@ -481,22 +608,49 @@ impl PbcCam {
         if !self.import_content(SourceFormat::Gerber, outline, "Demo Board Outline") {
             return;
         }
+        if !self.import_content(SourceFormat::Gerber, silk, "Demo Silkscreen") {
+            return;
+        }
         if !self.import_content(SourceFormat::Excellon, drills, "Demo Drills") {
             return;
         }
-        let layer = self
-            .project()
-            .layers()
-            .last()
-            .map(|layer| layer.id().value());
-        if let Some(value) =
-            self.run_command("operation.add_drill", json!({"layer": layer, "depth": 1.6}))
-            && let Some(id) = value.get("id").and_then(Value::as_u64)
-        {
-            self.selection = Some(Selection::Operation(OperationId::new(id)));
+
+        let layer_id = |name: &str| {
+            self.project()
+                .layers()
+                .iter()
+                .find(|layer| layer.name() == name)
+                .map(|layer| layer.id().value())
+        };
+        let drill = layer_id("Demo Drills");
+        let outline = layer_id("Demo Board Outline");
+        let silk = layer_id("Demo Silkscreen");
+
+        let mut last_task = None;
+        for (command, params) in [
+            ("task.add_drill", json!({"layer": drill, "depth": 1.6})),
+            (
+                "task.add_cutout",
+                json!({"layer": outline, "tool": 1.0, "side": "outside", "depth": 1.8}),
+            ),
+            (
+                "task.add_engrave",
+                json!({"layer": silk, "tool": 0.3, "depth": 0.2}),
+            ),
+        ] {
+            let Some(value) = self.run_command(command, params) else {
+                return;
+            };
+            last_task = value
+                .get("id")
+                .and_then(Value::as_u64)
+                .map(OperationId::new);
         }
+        self.selection = last_task.map(Selection::Task);
         self.fit_requested = true;
-        self.set_status("Demo project loaded — import, layers, drill operation and G-code export");
+        self.set_status(
+            "Demo loaded — 4 layers, 3 tasks; G-code can be exported per task or combined",
+        );
     }
 
     fn sync_window_title(&mut self, ctx: &egui::Context) {
@@ -516,7 +670,7 @@ impl PbcCam {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.about_open = false;
             self.shortcuts_open = false;
-            self.operation_editor = None;
+            self.task_editor = None;
         }
 
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Q)) {
@@ -529,7 +683,7 @@ impl PbcCam {
             return;
         }
 
-        if self.about_open || self.shortcuts_open || self.operation_editor.is_some() {
+        if self.about_open || self.shortcuts_open || self.task_editor.is_some() {
             return;
         }
 
@@ -550,8 +704,11 @@ impl PbcCam {
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z)) {
             self.undo();
         }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::E)) {
+            self.export_all_gcode_dialog();
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::E)) {
-            self.export_gcode_dialog();
+            self.export_task_gcode_dialog();
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F)) {
             self.fit_view();
@@ -606,14 +763,14 @@ impl PbcCam {
                     widgets::field_row(ui, "Version", VERSION);
                     widgets::field_row(ui, "License", "MIT");
                     widgets::field_row(ui, "Built with", "Rust + egui + gerber_parser");
-                    widgets::field_row(ui, "Milestone", "Gerber/Excellon import + drilling");
+                    widgets::field_row(ui, "Milestone", "Task timeline + combined G-code");
                     widgets::field_row(
                         ui,
                         "In this project",
                         &format!(
-                            "{} layers · {} operations",
+                            "{} layers · {} tasks",
                             self.project().layers().len(),
-                            self.project().operations().len()
+                            self.project().tasks().len()
                         ),
                     );
 
@@ -653,7 +810,8 @@ impl PbcCam {
                     shortcut_row(ui, SHORTCUT_NEW, "New project");
                     shortcut_row(ui, SHORTCUT_OPEN, "Import Gerber");
                     shortcut_row(ui, "Cmd/Ctrl+Shift+O", "Import Excellon");
-                    shortcut_row(ui, "Cmd/Ctrl+E", "Export G-code");
+                    shortcut_row(ui, "Cmd/Ctrl+E", "Export selected task G-code");
+                    shortcut_row(ui, "Cmd/Ctrl+Shift+E", "Export all tasks G-code");
                     shortcut_row(ui, SHORTCUT_QUIT, "Quit");
 
                     ui.add_space(10.0);
@@ -684,26 +842,27 @@ impl PbcCam {
             self.shortcuts_open = open && !close_clicked;
         }
 
-        self.show_operation_editor(ctx);
+        self.show_task_editor(ctx);
     }
 
-    fn show_operation_editor(&mut self, ctx: &egui::Context) {
-        let Some(mut editor) = self.operation_editor.clone() else {
+    fn show_task_editor(&mut self, ctx: &egui::Context) {
+        let Some(mut editor) = self.task_editor.clone() else {
             return;
         };
         let mut open = true;
         let mut apply = false;
         let mut cancel = false;
+        let kind_name = task_editor_kind_name(&editor.kind);
 
-        egui::Window::new("Drill operation")
+        egui::Window::new(format!("{kind_name} task"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .default_width(390.0)
+            .default_width(410.0)
             .frame(dialog_frame())
             .show(ctx, |ui| {
-                widgets::section_label(ui, "Operation");
+                widgets::section_label(ui, "Task");
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label("Name");
@@ -713,7 +872,7 @@ impl PbcCam {
                 });
                 ui.label(
                     RichText::new(format!(
-                        "Source: {} · #{}",
+                        "{kind_name} · source: {} · #{}",
                         editor.layer_name,
                         editor.layer.value()
                     ))
@@ -724,25 +883,84 @@ impl PbcCam {
                 ui.add_space(10.0);
                 widgets::hairline(ui);
                 ui.add_space(8.0);
-                widgets::section_label(ui, "Cut parameters");
+                widgets::section_label(ui, "Settings");
                 ui.add_space(4.0);
 
-                metric_row(ui, "Depth", &mut editor.depth, 0.01..=50.0, " mm");
-                metric_row(ui, "Retract", &mut editor.retract, 0.1..=100.0, " mm");
-                metric_row(ui, "Feed", &mut editor.feed, 1.0..=10_000.0, " mm/min");
-                metric_row(ui, "Plunge", &mut editor.plunge, 1.0..=5_000.0, " mm/min");
-                metric_row(ui, "Dwell", &mut editor.dwell, 0.0..=10.0, " s");
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Spindle").size(11.0).color(theme::TEXT_MUTED));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut editor.spindle)
-                                .range(0..=60_000)
-                                .speed(100)
-                                .suffix(" rpm"),
-                        );
-                    });
-                });
+                match &mut editor.kind {
+                    TaskEditorKind::Drill {
+                        depth,
+                        retract,
+                        feed,
+                        plunge,
+                        dwell,
+                        spindle,
+                    } => {
+                        metric_row(ui, "Depth", depth, 0.01..=50.0, " mm");
+                        metric_row(ui, "Retract", retract, 0.1..=100.0, " mm");
+                        metric_row(ui, "Feed", feed, 1.0..=10_000.0, " mm/min");
+                        metric_row(ui, "Plunge", plunge, 1.0..=5_000.0, " mm/min");
+                        metric_row(ui, "Dwell", dwell, 0.0..=10.0, " s");
+                        spindle_row(ui, spindle);
+                    }
+                    TaskEditorKind::Cutout {
+                        tool,
+                        side,
+                        depth,
+                        retract,
+                        feed,
+                        plunge,
+                        spindle,
+                    } => {
+                        metric_row(ui, "Tool diameter", tool, 0.05..=10.0, " mm");
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Cutter side")
+                                    .size(11.0)
+                                    .color(theme::TEXT_MUTED),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    for candidate in [
+                                        ContourSide::OnLine,
+                                        ContourSide::Inside,
+                                        ContourSide::Outside,
+                                    ] {
+                                        if ui
+                                            .add(Button::selectable(
+                                                *side == candidate,
+                                                candidate.label(),
+                                            ))
+                                            .clicked()
+                                        {
+                                            *side = candidate;
+                                        }
+                                    }
+                                },
+                            );
+                        });
+                        metric_row(ui, "Depth", depth, 0.01..=50.0, " mm");
+                        metric_row(ui, "Retract", retract, 0.1..=100.0, " mm");
+                        metric_row(ui, "Feed", feed, 1.0..=10_000.0, " mm/min");
+                        metric_row(ui, "Plunge", plunge, 1.0..=5_000.0, " mm/min");
+                        spindle_row(ui, spindle);
+                    }
+                    TaskEditorKind::Engrave {
+                        tool,
+                        depth,
+                        retract,
+                        feed,
+                        plunge,
+                        spindle,
+                    } => {
+                        metric_row(ui, "Tool diameter", tool, 0.05..=10.0, " mm");
+                        metric_row(ui, "Depth", depth, 0.01..=50.0, " mm");
+                        metric_row(ui, "Retract", retract, 0.1..=100.0, " mm");
+                        metric_row(ui, "Feed", feed, 1.0..=10_000.0, " mm/min");
+                        metric_row(ui, "Plunge", plunge, 1.0..=5_000.0, " mm/min");
+                        spindle_row(ui, spindle);
+                    }
+                }
 
                 if let Some(error) = &editor.error {
                     ui.add_space(8.0);
@@ -765,35 +983,111 @@ impl PbcCam {
             });
 
         if apply {
-            let params = json!({
-                "id": editor.id.value(),
-                "name": editor.name,
-                "depth": editor.depth,
-                "retract": editor.retract,
-                "feed": editor.feed,
-                "plunge": editor.plunge,
-                "dwell": editor.dwell,
-                "spindle": editor.spindle,
-            });
-            match self.run_command("operation.update_drill", params) {
+            let (command, params) = match &editor.kind {
+                TaskEditorKind::Drill {
+                    depth,
+                    retract,
+                    feed,
+                    plunge,
+                    dwell,
+                    spindle,
+                } => (
+                    "task.update_drill",
+                    json!({
+                        "id": editor.id.value(),
+                        "name": editor.name,
+                        "depth": depth,
+                        "retract": retract,
+                        "feed": feed,
+                        "plunge": plunge,
+                        "dwell": dwell,
+                        "spindle": spindle,
+                    }),
+                ),
+                TaskEditorKind::Cutout {
+                    tool,
+                    side,
+                    depth,
+                    retract,
+                    feed,
+                    plunge,
+                    spindle,
+                } => (
+                    "task.update_cutout",
+                    json!({
+                        "id": editor.id.value(),
+                        "name": editor.name,
+                        "tool": tool,
+                        "side": side.id(),
+                        "depth": depth,
+                        "retract": retract,
+                        "feed": feed,
+                        "plunge": plunge,
+                        "spindle": spindle,
+                    }),
+                ),
+                TaskEditorKind::Engrave {
+                    tool,
+                    depth,
+                    retract,
+                    feed,
+                    plunge,
+                    spindle,
+                } => (
+                    "task.update_engrave",
+                    json!({
+                        "id": editor.id.value(),
+                        "name": editor.name,
+                        "tool": tool,
+                        "depth": depth,
+                        "retract": retract,
+                        "feed": feed,
+                        "plunge": plunge,
+                        "spindle": spindle,
+                    }),
+                ),
+            };
+            match self.run_command(command, params) {
                 Some(_) => {
-                    self.operation_editor = None;
-                    self.set_status("Operation updated");
+                    self.task_editor = None;
+                    self.set_status("Task updated");
                 }
                 None => {
                     editor.error = Some(self.status.clone());
-                    self.operation_editor = Some(editor);
+                    self.task_editor = Some(editor);
                 }
             }
             return;
         }
 
         if cancel || !open {
-            self.operation_editor = None;
+            self.task_editor = None;
         } else {
-            self.operation_editor = Some(editor);
+            self.task_editor = Some(editor);
         }
     }
+}
+
+fn task_editor_kind_name(kind: &TaskEditorKind) -> &'static str {
+    match kind {
+        TaskEditorKind::Drill { .. } => "Drill",
+        TaskEditorKind::Cutout { .. } => "Contour cut",
+        TaskEditorKind::Engrave { .. } => "Engrave",
+    }
+}
+
+fn spindle_row(ui: &mut egui::Ui, spindle: &mut u32) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Spindle").size(11.0).color(theme::TEXT_MUTED));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add(
+                egui::DragValue::new(spindle)
+                    .range(0..=60_000)
+                    .speed(100)
+                    .suffix(" rpm"),
+            );
+        });
+    });
 }
 
 impl eframe::App for PbcCam {

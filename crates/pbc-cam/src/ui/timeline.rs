@@ -1,4 +1,4 @@
-//! Operation timeline at the bottom of the workspace.
+//! Task timeline at the bottom of the workspace.
 
 use eframe::egui::{self, Align, Button, Frame, Layout, Margin, RichText, Stroke, Ui, vec2};
 
@@ -6,72 +6,81 @@ use crate::app::{PbcCam, Selection};
 use crate::theme;
 use crate::ui::widgets;
 
-/// Draw the operation timeline above the status bar.
+/// Draw the task timeline above the status bar.
 pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
     let frame = Frame::new()
         .fill(theme::PANEL)
         .inner_margin(Margin::symmetric(12, 7))
         .stroke(Stroke::new(1.0, theme::BORDER));
 
-    egui::Panel::bottom("operation_timeline")
+    egui::Panel::bottom("task_timeline")
         .exact_size(84.0)
         .frame(frame)
         .show_separator_line(false)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                widgets::section_label(ui, "Operations");
+                widgets::section_label(ui, "Tasks");
                 widgets::pill(
                     ui,
-                    &app.project().operations().len().to_string(),
+                    &app.project().tasks().len().to_string(),
                     theme::TEXT_MUTED,
                 );
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new(
-                        "Ordered drilling and routing steps for the NC program",
-                    )
-                    .size(10.0)
-                    .color(theme::TEXT_FAINT),
+                    RichText::new("Ordered drilling, contour-cut and engraving steps")
+                        .size(10.0)
+                        .color(theme::TEXT_FAINT),
                 );
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let can_export = app.project().enabled_drill_count() > 0;
+                    let can_export = app.project().enabled_task_count() > 0;
                     let export = ui.add_enabled(
                         can_export,
-                        Button::new(RichText::new("Export G-code").size(11.0)),
+                        Button::new(RichText::new("Export all G-code").size(11.0)),
                     );
                     if export.clicked() {
-                        app.export_gcode_dialog();
+                        app.export_all_gcode_dialog();
                     }
                     if !can_export {
-                        export.on_disabled_hover_text(
-                            "Add and enable a drilling operation first",
-                        );
+                        export.on_disabled_hover_text("Add and enable a task first");
                     }
 
-                    let can_add = app.can_add_drill_operation();
-                    let add = ui.add_enabled(
-                        can_add,
-                        Button::new(RichText::new("+ Drill").size(11.0)),
-                    );
-                    if add.clicked() {
-                        app.add_drill_operation();
-                    }
-                    if !can_add {
-                        add.on_disabled_hover_text(
-                            "Import an Excellon layer with holes or slots first",
+                    ui.menu_button(RichText::new("+ Task").size(11.0), |ui| {
+                        let drill = ui.add_enabled(
+                            app.can_add_drill_task(),
+                            Button::new("Drilling"),
                         );
-                    }
+                        if drill.clicked() {
+                            app.add_drill_task();
+                            ui.close();
+                        }
+                        let cutout = ui.add_enabled(
+                            app.can_add_cutout_task(),
+                            Button::new("Contour cut"),
+                        );
+                        if cutout.clicked() {
+                            app.add_cutout_task();
+                            ui.close();
+                        }
+                        let engrave = ui.add_enabled(
+                            app.can_add_engrave_task(),
+                            Button::new("Engraving"),
+                        );
+                        if engrave.clicked() {
+                            app.add_engrave_task();
+                            ui.close();
+                        }
+                    });
                 });
             });
 
             ui.add_space(5.0);
 
-            if app.project().operations().is_empty() {
+            if app.project().tasks().is_empty() {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(
-                            "No operations yet — import Excellon drills, then add a drilling operation.",
+                            "No tasks yet — import Gerber/Excellon data, then add a drilling, contour-cut or engraving task.",
                         )
                         .size(11.0)
                         .color(theme::TEXT_FAINT),
@@ -85,13 +94,10 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let mut selected_change = None;
-                        for (index, operation) in
-                            app.project().operations().iter().enumerate()
-                        {
-                            let selected =
-                                app.selection == Some(Selection::Operation(operation.id()));
-                            let color = if operation.enabled() {
-                                theme::COPPER
+                        for (index, task) in app.project().tasks().iter().enumerate() {
+                            let selected = app.selection == Some(Selection::Task(task.id()));
+                            let color = if task.enabled() {
+                                task_color(task.kind())
                             } else {
                                 theme::TEXT_FAINT
                             };
@@ -112,7 +118,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                                 .corner_radius(6)
                                 .inner_margin(Margin::symmetric(9, 5))
                                 .show(ui, |ui| {
-                                    ui.set_min_width(168.0);
+                                    ui.set_min_width(172.0);
                                     ui.horizontal(|ui| {
                                         let (dot, _) = ui.allocate_exact_size(
                                             vec2(7.0, 7.0),
@@ -122,7 +128,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                                         let title = RichText::new(format!(
                                             "{}. {}",
                                             index + 1,
-                                            operation.name()
+                                            task.name()
                                         ))
                                         .size(11.5)
                                         .strong()
@@ -132,18 +138,15 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                                             theme::TEXT
                                         });
                                         if ui
-                                            .add(
-                                                Button::new(title)
-                                                    .frame(false),
-                                            )
+                                            .add(Button::new(title).frame(false))
                                             .clicked()
                                         {
                                             selected_change =
-                                                Some(Selection::Operation(operation.id()));
+                                                Some(Selection::Task(task.id()));
                                         }
                                     });
                                     ui.label(
-                                        RichText::new(operation_subtitle(operation))
+                                        RichText::new(task_subtitle(app, task))
                                             .size(9.5)
                                             .color(theme::TEXT_MUTED),
                                     );
@@ -158,16 +161,42 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         });
 }
 
-fn operation_subtitle(operation: &pbc_cam_core::Operation) -> String {
-    match operation.kind() {
-        pbc_cam_core::OperationKind::Drill(drill) => format!(
-            "Drill · depth {:.2} mm · {}",
-            drill.depth_mm,
-            if operation.enabled() {
-                "enabled"
-            } else {
-                "disabled"
-            }
+fn task_color(kind: &pbc_cam_core::OperationKind) -> egui::Color32 {
+    match kind {
+        pbc_cam_core::OperationKind::Drill(_) => theme::COPPER,
+        pbc_cam_core::OperationKind::Cutout(_) => theme::ACCENT,
+        pbc_cam_core::OperationKind::Engrave(_) => theme::COPPER_BRIGHT,
+    }
+}
+
+fn task_subtitle(app: &PbcCam, task: &pbc_cam_core::Task) -> String {
+    let enabled = if task.enabled() { "" } else { " · disabled" };
+    match task.kind() {
+        pbc_cam_core::OperationKind::Drill(drill) => {
+            let holes = app
+                .project()
+                .layer(drill.layer)
+                .and_then(|layer| match layer.geometry() {
+                    pbc_cam_core::LayerGeometry::Excellon(excellon) => {
+                        Some(excellon.holes.len() + excellon.slots.len())
+                    }
+                    pbc_cam_core::LayerGeometry::Gerber(_) => None,
+                })
+                .unwrap_or(0);
+            format!(
+                "Drill · {holes} holes/slots · {:.2} mm deep{enabled}",
+                drill.depth_mm
+            )
+        }
+        pbc_cam_core::OperationKind::Cutout(cutout) => format!(
+            "Cutout · Ø{:.2} mm · {} · {:.2} mm{enabled}",
+            cutout.tool_diameter_mm,
+            cutout.side.label(),
+            cutout.depth_mm
+        ),
+        pbc_cam_core::OperationKind::Engrave(engrave) => format!(
+            "Engrave · Ø{:.2} mm · {:.2} mm deep{enabled}",
+            engrave.tool_diameter_mm, engrave.depth_mm
         ),
     }
 }

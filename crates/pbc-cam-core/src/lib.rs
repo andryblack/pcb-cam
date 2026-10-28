@@ -18,16 +18,22 @@ mod project;
 mod units;
 
 pub use layer::{Layer, LayerId, SourceFormat, suggest_color};
-pub use operation::{DrillOperation, Operation, OperationId, OperationKind};
+pub use operation::{
+    ContourSide, CutoutOperation, CutoutTask, DrillOperation, DrillTask, EngraveOperation,
+    EngraveTask, Operation, OperationId, OperationKind, Task, TaskId, TaskKind,
+};
 pub use project::{Project, UNTITLED_PROJECT};
 pub use tool::{Tool, ToolId, ToolKind};
 pub use units::Unit;
 
 pub use formats::{ParseError, parse_excellon, parse_gerber};
-pub use gcode::{GcodeProgram, generate_drill_gcode};
+pub use gcode::{
+    GcodeProgram, generate_all_gcode, generate_drill_gcode, generate_task_gcode,
+    generate_tasks_gcode,
+};
 pub use geometry::{
     Aperture, ApertureHole, ApertureShape, Bounds, DrillHit, DrillSlot, DrillTool, ExcellonLayer,
-    GerberLayer, LayerGeometry, Path, Point, Polarity, Primitive,
+    GerberLayer, LayerGeometry, Path, Point, Polarity, Primitive, offset_closed_path,
 };
 
 /// Version of the core crate.
