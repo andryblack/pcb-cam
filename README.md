@@ -40,6 +40,7 @@ Implemented:
   - tool definitions, drill hits and `G85` slots
 - Canvas layer rendering with fit-to-project, pan/zoom, grid, axes and scale bar
 - Correct triangulation of concave Gerber regions (earcutr) instead of convex fan fill
+- Circular-aperture traces with round joins and caps, matching Gerber stroke geometry
 - Layer browser with visibility and selection
 - **Source tool browser**:
   - Excellon tools with number, diameter and object count

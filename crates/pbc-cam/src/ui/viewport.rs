@@ -135,7 +135,9 @@ fn draw_layer(painter: &Painter, rect: Rect, view: &ViewState, layer: &Layer, se
     let color = if selected {
         Color32::from_rgb(r, g, b)
     } else {
-        Color32::from_rgba_unmultiplied(r, g, b, 220)
+        // Pre-blend toward the canvas instead of drawing translucent strokes.
+        // Overlapping caps/joins must not become darker or lighter.
+        blend_over_canvas(r, g, b, 220)
     };
     match layer.geometry() {
         LayerGeometry::Gerber(gerber) => {
@@ -175,24 +177,17 @@ fn draw_gerber(
 
         match primitive {
             Primitive::Stroke { path, aperture, .. } => {
-                let mut points: Vec<Pos2> = path
+                let points: Vec<Pos2> = path
                     .points
                     .iter()
                     .map(|point| view.world_to_screen(pos2(point.x as f32, point.y as f32), rect))
                     .collect();
-                if path.closed
-                    && let Some(first) = points.first().copied()
-                {
-                    points.push(first);
-                }
-                if points.len() < 2 {
-                    continue;
-                }
                 let width = (aperture_stroke_width(aperture) * view.zoom()).max(0.8);
-                painter.add(Shape::line(
-                    points,
-                    Stroke::new(width.min(80.0), primitive_color),
-                ));
+                if let Some(mesh) =
+                    stroke_mesh(&points, path.closed, width.min(80.0), primitive_color)
+                {
+                    painter.add(Shape::mesh(mesh));
+                }
             }
             Primitive::Flash {
                 position,
@@ -215,6 +210,81 @@ fn draw_gerber(
             }
         }
     }
+}
+
+fn blend_over_canvas(r: u8, g: u8, b: u8, alpha: u8) -> Color32 {
+    let a = f32::from(alpha) / 255.0;
+    let canvas = theme::CANVAS;
+    let mix = |foreground: u8, background: u8| {
+        (f32::from(foreground) * a + f32::from(background) * (1.0 - a)).round() as u8
+    };
+    Color32::from_rgb(mix(r, canvas.r()), mix(g, canvas.g()), mix(b, canvas.b()))
+}
+
+/// Tessellate a Gerber stroke as a round-capped, round-joined band.
+///
+/// Epaint's thick paths use miter joins and cut off sharp corners, which is
+/// wrong for a circular Gerber aperture: the aperture centre traces the path
+/// and the swept area is the Minkowski sum with a disc.
+fn stroke_mesh(points: &[Pos2], closed: bool, width: f32, color: Color32) -> Option<Mesh> {
+    if points.len() < 2 || !width.is_finite() || width <= 0.0 {
+        return None;
+    }
+    let radius = width * 0.5;
+    let mut mesh = Mesh::default();
+
+    let mut add_quad = |a: Pos2, b: Pos2| {
+        let delta = b - a;
+        if delta.length_sq() < 1e-12 {
+            return;
+        }
+        let normal = delta.normalized().rot90() * radius;
+        let base = mesh.vertices.len() as u32;
+        mesh.colored_vertex(a + normal, color);
+        mesh.colored_vertex(b + normal, color);
+        mesh.colored_vertex(b - normal, color);
+        mesh.colored_vertex(a - normal, color);
+        mesh.add_triangle(base, base + 1, base + 2);
+        mesh.add_triangle(base, base + 2, base + 3);
+    };
+
+    for pair in points.windows(2) {
+        add_quad(pair[0], pair[1]);
+    }
+    if closed && points.len() > 2 {
+        add_quad(points[points.len() - 1], points[0]);
+    }
+
+    let segments = if radius < 1.5 {
+        6
+    } else if radius < 4.0 {
+        10
+    } else if radius < 10.0 {
+        16
+    } else {
+        24
+    };
+    let step = std::f32::consts::TAU / segments as f32;
+    for center in points {
+        let base = mesh.vertices.len() as u32;
+        mesh.colored_vertex(*center, color);
+        for index in 0..segments {
+            let angle = index as f32 * step;
+            mesh.colored_vertex(
+                pos2(
+                    center.x + radius * angle.cos(),
+                    center.y + radius * angle.sin(),
+                ),
+                color,
+            );
+        }
+        for index in 0..segments {
+            let next = (index + 1) % segments;
+            mesh.add_triangle(base, base + 1 + index, base + 1 + next);
+        }
+    }
+
+    Some(mesh)
 }
 
 fn draw_region(painter: &Painter, rect: Rect, view: &ViewState, contours: &[Path], color: Color32) {
@@ -822,4 +892,33 @@ fn draw_cursor(painter: &Painter, pointer: Pos2) {
     painter.line_segment([pointer + vec2(3.0, 0.0), pointer + vec2(8.0, 0.0)], stroke);
     painter.line_segment([pointer - vec2(0.0, 8.0), pointer - vec2(0.0, 3.0)], stroke);
     painter.line_segment([pointer + vec2(0.0, 3.0), pointer + vec2(0.0, 8.0)], stroke);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stroke_mesh_adds_round_cap_at_the_end() {
+        let mesh = stroke_mesh(
+            &[pos2(0.0, 0.0), pos2(10.0, 0.0), pos2(10.0, 10.0)],
+            false,
+            4.0,
+            Color32::WHITE,
+        )
+        .expect("mesh");
+        assert!(!mesh.indices.is_empty());
+        assert!(
+            mesh.vertices
+                .iter()
+                .any(|vertex| (vertex.pos - pos2(12.0, 0.0)).length() < 0.01),
+            "round join/cap vertex missing"
+        );
+    }
+
+    #[test]
+    fn blend_over_canvas_is_opaque() {
+        let color = blend_over_canvas(227, 164, 94, 220);
+        assert_eq!(color.a(), 255);
+    }
 }
