@@ -17,13 +17,13 @@ mod layer;
 mod project;
 mod units;
 
-pub use layer::{Layer, LayerId, SourceFormat, suggest_color};
+pub use layer::{Layer, LayerId, SourceFormat, SourceToolInfo, suggest_color};
 pub use operation::{
     ContourSide, CutoutOperation, CutoutTask, DrillOperation, DrillTask, EngraveOperation,
     EngraveTask, Operation, OperationId, OperationKind, Task, TaskId, TaskKind,
 };
 pub use project::{Project, UNTITLED_PROJECT};
-pub use tool::{Tool, ToolId, ToolKind};
+pub use tool::{Tool, ToolId, ToolKind, ToolLibrary};
 pub use units::Unit;
 
 pub use formats::{ParseError, parse_excellon, parse_gerber};

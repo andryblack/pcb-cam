@@ -5,22 +5,19 @@ use std::path::PathBuf;
 use crate::geometry::{Bounds, LayerGeometry};
 use crate::layer::{Layer, LayerId, SourceFormat, suggest_color};
 use crate::operation::{Operation, OperationId, OperationKind};
-use crate::tool::{Tool, ToolId, ToolKind};
 use crate::units::Unit;
 
 /// Default name of an unsaved project.
 pub const UNTITLED_PROJECT: &str = "Untitled";
 
-/// A PCB CAM project: source layers, a tool table and an ordered operation timeline.
+/// A PCB CAM project: source layers and an ordered task timeline.
 #[derive(Debug, Clone)]
 pub struct Project {
     name: String,
     layers: Vec<Layer>,
-    tools: Vec<Tool>,
     operations: Vec<Operation>,
     units: Unit,
     next_layer_id: u64,
-    next_tool_id: u64,
     next_operation_id: u64,
 }
 
@@ -42,11 +39,9 @@ impl Project {
                 name.to_owned()
             },
             layers: Vec::new(),
-            tools: Vec::new(),
             operations: Vec::new(),
             units: Unit::Millimeter,
             next_layer_id: 1,
-            next_tool_id: 1,
             next_operation_id: 1,
         }
     }
@@ -108,7 +103,7 @@ impl Project {
         id
     }
 
-    /// Remove a layer and any operations and imported tools that depend on it.
+    /// Remove a layer and any tasks that depend on it.
     ///
     /// Returns `true` when a layer was removed.
     pub fn remove_layer(&mut self, id: LayerId) -> bool {
@@ -120,7 +115,6 @@ impl Project {
 
         self.operations
             .retain(|operation| operation.source_layer() != id);
-        self.tools.retain(|tool| tool.source_layer() != Some(id));
         true
     }
 
@@ -151,48 +145,6 @@ impl Project {
     /// Total number of drawing primitives, holes and slots.
     pub fn object_count(&self) -> usize {
         self.layers.iter().map(Layer::object_count).sum()
-    }
-
-    /// All tools in the project tool table.
-    pub fn tools(&self) -> &[Tool] {
-        &self.tools
-    }
-
-    /// Look up a tool.
-    pub fn tool(&self, id: ToolId) -> Option<&Tool> {
-        self.tools.iter().find(|tool| tool.id() == id)
-    }
-
-    /// Look up a tool mutably.
-    pub fn tool_mut(&mut self, id: ToolId) -> Option<&mut Tool> {
-        self.tools.iter_mut().find(|tool| tool.id() == id)
-    }
-
-    /// Add a tool to the table.
-    pub fn add_tool(
-        &mut self,
-        name: impl Into<String>,
-        kind: ToolKind,
-        diameter_mm: f64,
-        source_layer: Option<LayerId>,
-    ) -> ToolId {
-        let id = ToolId::new(self.next_tool_id);
-        self.next_tool_id += 1;
-
-        let mut name = name.into();
-        if name.trim().is_empty() {
-            name = format!("{} {:.2} mm", kind.label(), diameter_mm.max(0.0));
-        }
-        self.tools
-            .push(Tool::new(id, name, kind, diameter_mm, source_layer));
-        id
-    }
-
-    /// Remove a tool. Returns `true` when it existed.
-    pub fn remove_tool(&mut self, id: ToolId) -> bool {
-        let before = self.tools.len();
-        self.tools.retain(|tool| tool.id() != id);
-        self.tools.len() != before
     }
 
     /// Operations in execution order.
@@ -316,6 +268,7 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ToolId;
     use crate::geometry::{GerberLayer, Point, Primitive};
     use crate::operation::DrillOperation;
 
@@ -378,15 +331,15 @@ mod tests {
         let mut project = Project::default();
         let first = project.add_layer("A", None, None, layer());
         let second = project.add_layer("B", None, None, layer());
-        let tool = project.add_tool("T1", ToolKind::Drill, 0.8, Some(first));
-        let operation =
-            project.add_operation("Drill A", OperationKind::Drill(DrillOperation::new(first)));
+        let operation = project.add_operation(
+            "Drill A",
+            OperationKind::Drill(DrillOperation::new(first, ToolId::new(1))),
+        );
 
         assert!(project.remove_layer(first));
         assert!(!project.remove_layer(first));
         assert_eq!(project.layers().len(), 1);
         assert_eq!(project.layer(second).unwrap().name(), "B");
-        assert!(project.tool(tool).is_none());
         assert!(project.operation(operation).is_none());
     }
 
@@ -408,8 +361,14 @@ mod tests {
     fn operations_can_be_reordered() {
         let mut project = Project::default();
         let a = project.add_layer("A", None, None, layer());
-        let first = project.add_operation("one", OperationKind::Drill(DrillOperation::new(a)));
-        let second = project.add_operation("two", OperationKind::Drill(DrillOperation::new(a)));
+        let first = project.add_operation(
+            "one",
+            OperationKind::Drill(DrillOperation::new(a, ToolId::new(1))),
+        );
+        let second = project.add_operation(
+            "two",
+            OperationKind::Drill(DrillOperation::new(a, ToolId::new(1))),
+        );
 
         assert!(project.move_operation(second, 0));
         assert_eq!(project.operations()[0].id(), second);

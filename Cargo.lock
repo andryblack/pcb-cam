@@ -2695,6 +2695,8 @@ name = "pbc-cam-core"
 version = "0.1.0"
 dependencies = [
  "gerber_parser",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

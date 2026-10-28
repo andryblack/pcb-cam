@@ -3,7 +3,9 @@
 //! The public API is in transition from "operation" to "task"; the type
 //! aliases at the end of this module let front ends use the newer name.
 
-use crate::LayerId;
+use std::collections::BTreeSet;
+
+use crate::{LayerId, ToolId};
 
 /// Stable identifier of a task inside a [`Project`](crate::Project).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -58,6 +60,12 @@ impl ContourSide {
 pub struct DrillOperation {
     /// Excellon layer that supplies the holes.
     pub layer: LayerId,
+    /// Machining tool from the user library.
+    pub tool: ToolId,
+    /// Source Excellon tool numbers selected for this task.
+    ///
+    /// An empty set means all source tools.
+    pub source_tools: BTreeSet<u32>,
     /// Cut depth below the board surface, in millimetres.
     pub depth_mm: f64,
     /// Safe Z height, in millimetres.
@@ -68,26 +76,32 @@ pub struct DrillOperation {
     pub plunge_mm_min: f64,
     /// Dwell at the bottom of each hole, in seconds.
     pub dwell_s: f64,
+    /// Z step-down for helical interpolation, in millimetres.
+    pub stepdown_mm: f64,
     /// Spindle speed.
     pub spindle_rpm: u32,
 }
 
 impl DrillOperation {
     /// Sensible defaults for a new drilling task.
-    pub const fn new(layer: LayerId) -> Self {
+    pub fn new(layer: LayerId, tool: ToolId) -> Self {
         Self {
             layer,
+            tool,
+            source_tools: BTreeSet::new(),
             depth_mm: 1.8,
             retract_mm: 3.0,
             feed_mm_min: 300.0,
             plunge_mm_min: 120.0,
             dwell_s: 0.1,
+            stepdown_mm: 0.5,
             spindle_rpm: 10_000,
         }
     }
 
     /// Validate the task before generating G-code.
     pub fn validate(&self) -> Result<(), String> {
+        validate_tool_id(self.tool)?;
         validate_z_and_feeds(
             self.depth_mm,
             self.retract_mm,
@@ -98,6 +112,9 @@ impl DrillOperation {
         if !self.dwell_s.is_finite() || self.dwell_s < 0.0 {
             return Err("dwell must not be negative".into());
         }
+        if !self.stepdown_mm.is_finite() || self.stepdown_mm <= 0.0 {
+            return Err("helical step-down must be greater than zero".into());
+        }
         Ok(())
     }
 }
@@ -107,8 +124,8 @@ impl DrillOperation {
 pub struct CutoutOperation {
     /// Gerber layer that supplies the closed contours.
     pub layer: LayerId,
-    /// Cutter diameter in millimetres.
-    pub tool_diameter_mm: f64,
+    /// Machining tool from the user library.
+    pub tool: ToolId,
     /// Which side of each contour to follow.
     pub side: ContourSide,
     /// Cut depth below the board surface, in millimetres.
@@ -125,10 +142,10 @@ pub struct CutoutOperation {
 
 impl CutoutOperation {
     /// Sensible defaults for a new contour cut.
-    pub const fn new(layer: LayerId) -> Self {
+    pub fn new(layer: LayerId, tool: ToolId) -> Self {
         Self {
             layer,
-            tool_diameter_mm: 1.0,
+            tool,
             side: ContourSide::Outside,
             depth_mm: 1.8,
             retract_mm: 3.0,
@@ -140,7 +157,7 @@ impl CutoutOperation {
 
     /// Validate the task before generating G-code.
     pub fn validate(&self) -> Result<(), String> {
-        validate_tool(self.tool_diameter_mm)?;
+        validate_tool_id(self.tool)?;
         validate_z_and_feeds(
             self.depth_mm,
             self.retract_mm,
@@ -159,8 +176,8 @@ impl CutoutOperation {
 pub struct EngraveOperation {
     /// Gerber layer that supplies the paths.
     pub layer: LayerId,
-    /// Engraving cutter diameter in millimetres.
-    pub tool_diameter_mm: f64,
+    /// Machining tool from the user library.
+    pub tool: ToolId,
     /// Engraving depth below the surface, in millimetres.
     pub depth_mm: f64,
     /// Safe Z height, in millimetres.
@@ -175,10 +192,10 @@ pub struct EngraveOperation {
 
 impl EngraveOperation {
     /// Sensible defaults for a new engraving task.
-    pub const fn new(layer: LayerId) -> Self {
+    pub fn new(layer: LayerId, tool: ToolId) -> Self {
         Self {
             layer,
-            tool_diameter_mm: 0.3,
+            tool,
             depth_mm: 0.2,
             retract_mm: 2.0,
             feed_mm_min: 400.0,
@@ -189,7 +206,7 @@ impl EngraveOperation {
 
     /// Validate the task before generating G-code.
     pub fn validate(&self) -> Result<(), String> {
-        validate_tool(self.tool_diameter_mm)?;
+        validate_tool_id(self.tool)?;
         validate_z_and_feeds(
             self.depth_mm,
             self.retract_mm,
@@ -200,9 +217,9 @@ impl EngraveOperation {
     }
 }
 
-fn validate_tool(diameter: f64) -> Result<(), String> {
-    if !diameter.is_finite() || diameter <= 0.0 {
-        return Err("tool diameter must be greater than zero".into());
+fn validate_tool_id(tool: ToolId) -> Result<(), String> {
+    if tool.value() == 0 {
+        return Err("task has no machining tool".into());
     }
     Ok(())
 }
@@ -250,6 +267,15 @@ impl OperationKind {
             Self::Drill(_) => "Drill",
             Self::Cutout(_) => "Contour cut",
             Self::Engrave(_) => "Engrave",
+        }
+    }
+
+    /// Machining tool used by the task.
+    pub const fn tool(&self) -> ToolId {
+        match self {
+            Self::Drill(task) => task.tool,
+            Self::Cutout(task) => task.tool,
+            Self::Engrave(task) => task.tool,
         }
     }
 
@@ -340,6 +366,11 @@ impl Operation {
         self.kind.source_layer()
     }
 
+    /// Machining tool referenced by this task.
+    pub const fn tool(&self) -> ToolId {
+        self.kind.tool()
+    }
+
     /// Validate the task parameters.
     pub fn validate(&self) -> Result<(), String> {
         self.kind.validate()
@@ -365,13 +396,13 @@ mod tests {
 
     #[test]
     fn drill_defaults_validate() {
-        let drill = DrillOperation::new(LayerId::new(1));
+        let drill = DrillOperation::new(LayerId::new(1), ToolId::new(1));
         assert!(drill.validate().is_ok());
     }
 
     #[test]
     fn drill_validation_rejects_bad_values() {
-        let mut drill = DrillOperation::new(LayerId::new(1));
+        let mut drill = DrillOperation::new(LayerId::new(1), ToolId::new(1));
         drill.depth_mm = 0.0;
         assert!(drill.validate().is_err());
         drill.depth_mm = 1.0;
@@ -381,12 +412,12 @@ mod tests {
 
     #[test]
     fn cutout_and_engrave_validate_tools() {
-        let mut cutout = CutoutOperation::new(LayerId::new(1));
+        let mut cutout = CutoutOperation::new(LayerId::new(1), ToolId::new(2));
         assert!(cutout.validate().is_ok());
-        cutout.tool_diameter_mm = 0.0;
+        cutout.tool = ToolId::new(0);
         assert!(cutout.validate().is_err());
 
-        let mut engrave = EngraveOperation::new(LayerId::new(1));
+        let mut engrave = EngraveOperation::new(LayerId::new(1), ToolId::new(3));
         assert!(engrave.validate().is_ok());
         engrave.depth_mm = -1.0;
         assert!(engrave.validate().is_err());
@@ -398,7 +429,7 @@ mod tests {
         let operation = Operation::new(
             OperationId::new(1),
             "Cut".to_owned(),
-            OperationKind::Cutout(CutoutOperation::new(layer)),
+            OperationKind::Cutout(CutoutOperation::new(layer, ToolId::new(2))),
         );
         assert_eq!(operation.source_layer(), layer);
         assert_eq!(operation.kind_label(), "Contour cut");

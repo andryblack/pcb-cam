@@ -161,6 +161,13 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         });
 }
 
+fn tool_label(app: &PbcCam, task: &pbc_cam_core::Task) -> String {
+    app.session.tool_library().tool(task.tool()).map_or_else(
+        || "missing tool".to_owned(),
+        |tool| format!("Ø{:.2} {}", tool.diameter_mm(), tool.name()),
+    )
+}
+
 fn task_color(kind: &pbc_cam_core::OperationKind) -> egui::Color32 {
     match kind {
         pbc_cam_core::OperationKind::Drill(_) => theme::COPPER,
@@ -177,26 +184,43 @@ fn task_subtitle(app: &PbcCam, task: &pbc_cam_core::Task) -> String {
                 .project()
                 .layer(drill.layer)
                 .and_then(|layer| match layer.geometry() {
-                    pbc_cam_core::LayerGeometry::Excellon(excellon) => {
-                        Some(excellon.holes.len() + excellon.slots.len())
-                    }
+                    pbc_cam_core::LayerGeometry::Excellon(excellon) => Some(
+                        excellon
+                            .holes
+                            .iter()
+                            .filter(|hole| {
+                                drill.source_tools.is_empty()
+                                    || drill.source_tools.contains(&hole.tool)
+                            })
+                            .count()
+                            + excellon
+                                .slots
+                                .iter()
+                                .filter(|slot| {
+                                    drill.source_tools.is_empty()
+                                        || drill.source_tools.contains(&slot.tool)
+                                })
+                                .count(),
+                    ),
                     pbc_cam_core::LayerGeometry::Gerber(_) => None,
                 })
                 .unwrap_or(0);
+            let tool = tool_label(app, task);
             format!(
-                "Drill · {holes} holes/slots · {:.2} mm deep{enabled}",
+                "Drill · {tool} · {holes} objects · {:.2} mm{enabled}",
                 drill.depth_mm
             )
         }
         pbc_cam_core::OperationKind::Cutout(cutout) => format!(
-            "Cutout · Ø{:.2} mm · {} · {:.2} mm{enabled}",
-            cutout.tool_diameter_mm,
+            "Cutout · {} · {} · {:.2} mm{enabled}",
+            tool_label(app, task),
             cutout.side.label(),
             cutout.depth_mm
         ),
         pbc_cam_core::OperationKind::Engrave(engrave) => format!(
-            "Engrave · Ø{:.2} mm · {:.2} mm deep{enabled}",
-            engrave.tool_diameter_mm, engrave.depth_mm
+            "Engrave · {} · {:.2} mm deep{enabled}",
+            tool_label(app, task),
+            engrave.depth_mm
         ),
     }
 }

@@ -1,10 +1,11 @@
 //! Built-in command implementations.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use pbc_cam_core::{
     ContourSide, CutoutOperation, DrillOperation, EngraveOperation, LayerGeometry, LayerId,
-    OperationId, OperationKind, Project, ToolKind, UNTITLED_PROJECT, generate_all_gcode,
+    OperationId, OperationKind, Project, ToolId, ToolKind, UNTITLED_PROJECT, generate_all_gcode,
     generate_task_gcode, parse_excellon, parse_gerber,
 };
 use serde::Deserialize;
@@ -73,11 +74,14 @@ struct ToolUpdateParams {
 struct OperationAddDrillParams {
     layer: u64,
     name: Option<String>,
+    tool: Option<u64>,
+    source_tools: Option<Vec<u32>>,
     depth: Option<f64>,
     retract: Option<f64>,
     feed: Option<f64>,
     plunge: Option<f64>,
     dwell: Option<f64>,
+    stepdown: Option<f64>,
     spindle: Option<u32>,
 }
 
@@ -85,7 +89,7 @@ struct OperationAddDrillParams {
 struct OperationAddCutoutParams {
     layer: u64,
     name: Option<String>,
-    tool: Option<f64>,
+    tool: Option<u64>,
     side: Option<String>,
     depth: Option<f64>,
     retract: Option<f64>,
@@ -98,7 +102,7 @@ struct OperationAddCutoutParams {
 struct OperationUpdateCutoutParams {
     id: u64,
     name: Option<String>,
-    tool: Option<f64>,
+    tool: Option<u64>,
     side: Option<String>,
     depth: Option<f64>,
     retract: Option<f64>,
@@ -111,7 +115,7 @@ struct OperationUpdateCutoutParams {
 struct OperationAddEngraveParams {
     layer: u64,
     name: Option<String>,
-    tool: Option<f64>,
+    tool: Option<u64>,
     depth: Option<f64>,
     retract: Option<f64>,
     feed: Option<f64>,
@@ -123,7 +127,7 @@ struct OperationAddEngraveParams {
 struct OperationUpdateEngraveParams {
     id: u64,
     name: Option<String>,
-    tool: Option<f64>,
+    tool: Option<u64>,
     depth: Option<f64>,
     retract: Option<f64>,
     feed: Option<f64>,
@@ -141,11 +145,14 @@ struct ExportTaskGcodeParams {
 struct OperationUpdateDrillParams {
     id: u64,
     name: Option<String>,
+    tool: Option<u64>,
+    source_tools: Option<Vec<u32>>,
     depth: Option<f64>,
     retract: Option<f64>,
     feed: Option<f64>,
     plunge: Option<f64>,
     dwell: Option<f64>,
+    stepdown: Option<f64>,
     spindle: Option<u32>,
 }
 
@@ -219,7 +226,7 @@ pub(crate) fn import_excellon(session: &mut Session, params: &Value) -> Result<V
     let warnings = layer_geometry.warnings.clone();
     let objects = layer_geometry.hole_count() + layer_geometry.slot_count();
     let name = params.name.unwrap_or(default_name);
-    let drill_tools = layer_geometry.tools.clone();
+    let source_tools = layer_geometry.tools.clone();
 
     let project = session.project_mut();
     if project.name() == UNTITLED_PROJECT {
@@ -232,28 +239,11 @@ pub(crate) fn import_excellon(session: &mut Session, params: &Value) -> Result<V
         LayerGeometry::Excellon(layer_geometry),
     );
 
-    let mut added_tools = 0;
-    for tool in drill_tools {
-        let already = project.tools().iter().any(|existing| {
-            existing.source_layer() == Some(layer)
-                && (existing.diameter_mm() - tool.diameter_mm).abs() < 1e-9
-        });
-        if !already && tool.diameter_mm > 0.0 {
-            project.add_tool(
-                format!("Drill T{} · {:.2} mm", tool.number, tool.diameter_mm),
-                ToolKind::Drill,
-                tool.diameter_mm,
-                Some(layer),
-            );
-            added_tools += 1;
-        }
-    }
-
     Ok(json!({
         "layer": layer.value(),
         "name": name,
         "objects": objects,
-        "tools": added_tools,
+        "source_tools": source_tools.len(),
         "warnings": warnings,
         "bounds": bounds_json(bounds),
     }))
@@ -307,27 +297,17 @@ pub(crate) fn units_set(session: &mut Session, params: &Value) -> Result<Value, 
 pub(crate) fn tool_create(session: &mut Session, params: &Value) -> Result<Value, String> {
     let params: ToolCreateParams = parse_params(params)?;
     validate_diameter(params.diameter)?;
-    let kind = parse_tool_kind(params.kind.as_deref().unwrap_or("drill"))?;
-    let project = session.project_mut();
-    let id = project.add_tool(
+    let kind = parse_tool_kind(params.kind.as_deref().unwrap_or("end_mill"))?;
+    let id = session.tool_library_mut().add(
         params
             .name
             .unwrap_or_else(|| format!("{} {:.2} mm", kind.label(), params.diameter)),
         kind,
         params.diameter,
-        None,
+        params.feed.unwrap_or(300.0),
+        params.plunge.unwrap_or(120.0),
+        params.spindle.unwrap_or(10_000),
     );
-    if let Some(tool) = project.tool_mut(id) {
-        if let Some(feed) = params.feed {
-            tool.set_feed_mm_min(feed);
-        }
-        if let Some(plunge) = params.plunge {
-            tool.set_plunge_mm_min(plunge);
-        }
-        if let Some(spindle) = params.spindle {
-            tool.set_spindle_rpm(spindle);
-        }
-    }
     Ok(json!({"id": id.value()}))
 }
 
@@ -337,8 +317,8 @@ pub(crate) fn tool_update(session: &mut Session, params: &Value) -> Result<Value
         validate_diameter(diameter)?;
     }
     let tool = session
-        .project_mut()
-        .tool_mut(pbc_cam_core::ToolId::new(params.id))
+        .tool_library_mut()
+        .tool_mut(ToolId::new(params.id))
         .ok_or_else(|| format!("tool {} does not exist", params.id))?;
     if let Some(name) = params.name {
         tool.set_name(name);
@@ -363,10 +343,20 @@ pub(crate) fn tool_update(session: &mut Session, params: &Value) -> Result<Value
 
 pub(crate) fn tool_remove(session: &mut Session, params: &Value) -> Result<Value, String> {
     let params: LayerIdParams = parse_params(params)?;
-    if !session
-        .project_mut()
-        .remove_tool(pbc_cam_core::ToolId::new(params.id))
-    {
+    let tool = ToolId::new(params.id);
+    let used = session
+        .project()
+        .tasks()
+        .iter()
+        .filter(|task| task.tool() == tool)
+        .count();
+    if used > 0 {
+        return Err(format!(
+            "tool is used by {used} task{}; reassign or remove them first",
+            if used == 1 { "" } else { "s" }
+        ));
+    }
+    if !session.tool_library_mut().remove(tool) {
         return Err(format!("tool {} does not exist", params.id));
     }
     Ok(json!({"id": params.id}))
@@ -411,23 +401,40 @@ pub(crate) fn add_engrave_enabled(session: &Session) -> Result<(), String> {
 pub(crate) fn operation_add_cutout(session: &mut Session, params: &Value) -> Result<Value, String> {
     let params: OperationAddCutoutParams = parse_params(params)?;
     let layer_id = LayerId::new(params.layer);
-    let project = session.project_mut();
-    let layer = project
-        .layer(layer_id)
-        .ok_or_else(|| format!("layer {} does not exist", params.layer))?;
-    let LayerGeometry::Gerber(gerber) = layer.geometry() else {
-        return Err("contour cut requires a Gerber layer".into());
+    let layer_name = {
+        let layer = session
+            .project()
+            .layer(layer_id)
+            .ok_or_else(|| format!("layer {} does not exist", params.layer))?;
+        let LayerGeometry::Gerber(gerber) = layer.geometry() else {
+            return Err("contour cut requires a Gerber layer".into());
+        };
+        if !gerber.has_closed_contours() {
+            return Err("the selected layer contains no closed contours".into());
+        }
+        layer.name().to_owned()
     };
-    if !gerber.has_closed_contours() {
-        return Err("the selected layer contains no closed contours".into());
-    }
-    let default_name = format!("Cut {}", layer.name());
-    let name = params.name.unwrap_or(default_name);
 
-    let mut cutout = CutoutOperation::new(layer_id);
-    if let Some(tool) = params.tool {
-        cutout.tool_diameter_mm = tool;
-    }
+    let tool = match params.tool {
+        Some(id) => require_tool(session, id)?,
+        None => *session
+            .tool_library()
+            .first_of_kind(ToolKind::EndMill)
+            .as_ref()
+            .ok_or_else(|| "add an end mill to the tool library first".to_owned())?,
+    };
+    let default_name = format!("Cut {layer_name}");
+    let name = params.name.unwrap_or(default_name);
+    let tool_defaults = session
+        .tool_library()
+        .tool(tool)
+        .cloned()
+        .ok_or_else(|| "machining tool disappeared".to_owned())?;
+
+    let mut cutout = CutoutOperation::new(layer_id, tool);
+    cutout.feed_mm_min = tool_defaults.feed_mm_min();
+    cutout.plunge_mm_min = tool_defaults.plunge_mm_min();
+    cutout.spindle_rpm = tool_defaults.spindle_rpm();
     if let Some(side) = params.side.as_deref() {
         cutout.side = parse_side(side)?;
     }
@@ -444,8 +451,10 @@ pub(crate) fn operation_add_cutout(session: &mut Session, params: &Value) -> Res
         params.spindle,
     );
     cutout.validate()?;
-    let id = project.add_task(name.clone(), OperationKind::Cutout(cutout));
-    Ok(json!({"id": id.value(), "name": name}))
+    let id = session
+        .project_mut()
+        .add_task(name.clone(), OperationKind::Cutout(cutout));
+    Ok(json!({"id": id.value(), "name": name, "tool": tool.value()}))
 }
 
 pub(crate) fn operation_update_cutout(
@@ -453,6 +462,10 @@ pub(crate) fn operation_update_cutout(
     params: &Value,
 ) -> Result<Value, String> {
     let params: OperationUpdateCutoutParams = parse_params(params)?;
+    let tool = params
+        .tool
+        .map(|id| require_tool(session, id))
+        .transpose()?;
     let task = session
         .project_mut()
         .task_mut(OperationId::new(params.id))
@@ -463,8 +476,8 @@ pub(crate) fn operation_update_cutout(
     let OperationKind::Cutout(cutout) = task.kind_mut() else {
         return Err("task is not a contour cut".into());
     };
-    if let Some(tool) = params.tool {
-        cutout.tool_diameter_mm = tool;
+    if let Some(tool) = tool {
+        cutout.tool = tool;
     }
     if let Some(side) = params.side.as_deref() {
         cutout.side = parse_side(side)?;
@@ -491,23 +504,41 @@ pub(crate) fn operation_add_engrave(
 ) -> Result<Value, String> {
     let params: OperationAddEngraveParams = parse_params(params)?;
     let layer_id = LayerId::new(params.layer);
-    let project = session.project_mut();
-    let layer = project
-        .layer(layer_id)
-        .ok_or_else(|| format!("layer {} does not exist", params.layer))?;
-    let LayerGeometry::Gerber(gerber) = layer.geometry() else {
-        return Err("engraving requires a Gerber layer".into());
+    let layer_name = {
+        let layer = session
+            .project()
+            .layer(layer_id)
+            .ok_or_else(|| format!("layer {} does not exist", params.layer))?;
+        let LayerGeometry::Gerber(gerber) = layer.geometry() else {
+            return Err("engraving requires a Gerber layer".into());
+        };
+        if !gerber.has_engraving_paths() {
+            return Err("the selected layer contains no paths".into());
+        }
+        layer.name().to_owned()
     };
-    if !gerber.has_engraving_paths() {
-        return Err("the selected layer contains no paths".into());
-    }
-    let default_name = format!("Engrave {}", layer.name());
-    let name = params.name.unwrap_or(default_name);
 
-    let mut engrave = EngraveOperation::new(layer_id);
-    if let Some(tool) = params.tool {
-        engrave.tool_diameter_mm = tool;
-    }
+    let tool = match params.tool {
+        Some(id) => require_tool(session, id)?,
+        None => *session
+            .tool_library()
+            .first_of_kind(ToolKind::VBit)
+            .or_else(|| session.tool_library().first_of_kind(ToolKind::EndMill))
+            .as_ref()
+            .ok_or_else(|| "add a V-bit or end mill to the tool library first".to_owned())?,
+    };
+    let default_name = format!("Engrave {layer_name}");
+    let name = params.name.unwrap_or(default_name);
+    let tool_defaults = session
+        .tool_library()
+        .tool(tool)
+        .cloned()
+        .ok_or_else(|| "machining tool disappeared".to_owned())?;
+
+    let mut engrave = EngraveOperation::new(layer_id, tool);
+    engrave.feed_mm_min = tool_defaults.feed_mm_min();
+    engrave.plunge_mm_min = tool_defaults.plunge_mm_min();
+    engrave.spindle_rpm = tool_defaults.spindle_rpm();
     apply_milling_overrides(
         &mut engrave.depth_mm,
         &mut engrave.retract_mm,
@@ -521,8 +552,10 @@ pub(crate) fn operation_add_engrave(
         params.spindle,
     );
     engrave.validate()?;
-    let id = project.add_task(name.clone(), OperationKind::Engrave(engrave));
-    Ok(json!({"id": id.value(), "name": name}))
+    let id = session
+        .project_mut()
+        .add_task(name.clone(), OperationKind::Engrave(engrave));
+    Ok(json!({"id": id.value(), "name": name, "tool": tool.value()}))
 }
 
 pub(crate) fn operation_update_engrave(
@@ -530,6 +563,10 @@ pub(crate) fn operation_update_engrave(
     params: &Value,
 ) -> Result<Value, String> {
     let params: OperationUpdateEngraveParams = parse_params(params)?;
+    let tool = params
+        .tool
+        .map(|id| require_tool(session, id))
+        .transpose()?;
     let task = session
         .project_mut()
         .task_mut(OperationId::new(params.id))
@@ -540,8 +577,8 @@ pub(crate) fn operation_update_engrave(
     let OperationKind::Engrave(engrave) = task.kind_mut() else {
         return Err("task is not an engraving task".into());
     };
-    if let Some(tool) = params.tool {
-        engrave.tool_diameter_mm = tool;
+    if let Some(tool) = tool {
+        engrave.tool = tool;
     }
     apply_milling_overrides(
         &mut engrave.depth_mm,
@@ -562,20 +599,96 @@ pub(crate) fn operation_update_engrave(
 pub(crate) fn operation_add_drill(session: &mut Session, params: &Value) -> Result<Value, String> {
     let params: OperationAddDrillParams = parse_params(params)?;
     let layer_id = LayerId::new(params.layer);
-    let project = session.project_mut();
-    let layer = project
-        .layer(layer_id)
-        .ok_or_else(|| format!("layer {} does not exist", params.layer))?;
-    let LayerGeometry::Excellon(excellon) = layer.geometry() else {
-        return Err("drilling tasks require an Excellon layer".into());
+    let (layer_name, source_tools) = {
+        let layer = session
+            .project()
+            .layer(layer_id)
+            .ok_or_else(|| format!("layer {} does not exist", params.layer))?;
+        let LayerGeometry::Excellon(excellon) = layer.geometry() else {
+            return Err("drilling tasks require an Excellon layer".into());
+        };
+        let mut sources: Vec<(u32, f64)> = excellon
+            .tools
+            .iter()
+            .map(|tool| (tool.number, tool.diameter_mm))
+            .collect();
+        if sources.is_empty() {
+            for hole in &excellon.holes {
+                sources.push((hole.tool, hole.diameter_mm));
+            }
+            for slot in &excellon.slots {
+                sources.push((slot.tool, slot.diameter_mm));
+            }
+            sources.sort_by_key(|(number, _)| *number);
+            sources.dedup_by_key(|(number, _)| *number);
+        }
+        if sources.is_empty() {
+            return Err("the selected Excellon layer has no source tools".into());
+        }
+        (layer.name().to_owned(), sources)
     };
-    if excellon.holes.is_empty() && excellon.slots.is_empty() {
-        return Err("the selected Excellon layer has no holes or slots".into());
-    }
-    let default_name = format!("Drill {}", layer.name());
-    let name = params.name.unwrap_or(default_name);
 
-    let mut drill = DrillOperation::new(layer_id);
+    let filter: BTreeSet<u32> = match params.source_tools {
+        Some(list) => list.into_iter().collect(),
+        None => source_tools
+            .iter()
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(number, _)| *number)
+            .into_iter()
+            .collect(),
+    };
+    let selected: Vec<f64> = source_tools
+        .iter()
+        .filter(|(number, _)| filter.is_empty() || filter.contains(number))
+        .map(|(_, diameter)| *diameter)
+        .collect();
+    if selected.is_empty() {
+        return Err("the task filters out every source tool".into());
+    }
+    let min_diameter = selected.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_diameter = selected.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let single_size = (max_diameter - min_diameter).abs() < 1e-6;
+
+    let tool = match params.tool {
+        Some(id) => require_tool(session, id)?,
+        None => {
+            let library = session.tool_library();
+            let candidate = if single_size {
+                library
+                    .closest(ToolKind::Drill, min_diameter)
+                    .filter(|id| {
+                        library
+                            .tool(*id)
+                            .is_some_and(|tool| (tool.diameter_mm() - min_diameter).abs() < 1e-6)
+                    })
+                    .or_else(|| library.largest_fitting(ToolKind::EndMill, min_diameter))
+            } else {
+                library.largest_fitting(ToolKind::EndMill, min_diameter)
+            };
+            candidate.ok_or_else(|| {
+                format!(
+                    "no machining tool can cut holes from {:.3} to {:.3} mm; add a suitable tool",
+                    min_diameter, max_diameter
+                )
+            })?
+        }
+    };
+    let default_name = format!("Drill {layer_name}");
+    let name = params.name.unwrap_or(default_name);
+    let tool_defaults = session
+        .tool_library()
+        .tool(tool)
+        .cloned()
+        .ok_or_else(|| "machining tool disappeared".to_owned())?;
+
+    let mut drill = DrillOperation::new(layer_id, tool);
+    drill.feed_mm_min = tool_defaults.feed_mm_min();
+    drill.plunge_mm_min = tool_defaults.plunge_mm_min();
+    drill.spindle_rpm = tool_defaults.spindle_rpm();
+    drill.source_tools = filter;
+    if let Some(stepdown) = params.stepdown {
+        drill.stepdown_mm = stepdown;
+    }
     if let Some(depth) = params.depth {
         drill.depth_mm = depth;
     }
@@ -595,8 +708,15 @@ pub(crate) fn operation_add_drill(session: &mut Session, params: &Value) -> Resu
         drill.spindle_rpm = spindle;
     }
     drill.validate()?;
-    let id = project.add_operation(name.clone(), OperationKind::Drill(drill));
-    Ok(json!({"id": id.value(), "name": name}))
+    let id = session
+        .project_mut()
+        .add_task(name.clone(), OperationKind::Drill(drill));
+    Ok(json!({
+        "id": id.value(),
+        "name": name,
+        "tool": tool.value(),
+        "source_tools": source_tools.iter().map(|(number, _)| *number).collect::<Vec<_>>(),
+    }))
 }
 
 pub(crate) fn operation_update_drill(
@@ -604,16 +724,29 @@ pub(crate) fn operation_update_drill(
     params: &Value,
 ) -> Result<Value, String> {
     let params: OperationUpdateDrillParams = parse_params(params)?;
-    let operation = session
+    let tool = params
+        .tool
+        .map(|id| require_tool(session, id))
+        .transpose()?;
+    let task = session
         .project_mut()
-        .operation_mut(OperationId::new(params.id))
-        .ok_or_else(|| format!("operation {} does not exist", params.id))?;
+        .task_mut(OperationId::new(params.id))
+        .ok_or_else(|| format!("task {} does not exist", params.id))?;
     if let Some(name) = params.name {
-        operation.set_name(name);
+        task.set_name(name);
     }
-    let OperationKind::Drill(drill) = operation.kind_mut() else {
+    let OperationKind::Drill(drill) = task.kind_mut() else {
         return Err("task is not a drilling task".into());
     };
+    if let Some(tool) = tool {
+        drill.tool = tool;
+    }
+    if let Some(source_tools) = params.source_tools {
+        drill.source_tools = source_tools.into_iter().collect();
+    }
+    if let Some(stepdown) = params.stepdown {
+        drill.stepdown_mm = stepdown;
+    }
     if let Some(depth) = params.depth {
         drill.depth_mm = depth;
     }
@@ -634,6 +767,15 @@ pub(crate) fn operation_update_drill(
     }
     drill.validate()?;
     Ok(json!({"id": params.id}))
+}
+
+fn require_tool(session: &Session, id: u64) -> Result<ToolId, String> {
+    let tool = ToolId::new(id);
+    session
+        .tool_library()
+        .tool(tool)
+        .ok_or_else(|| format!("machining tool {id} does not exist"))?;
+    Ok(tool)
 }
 
 pub(crate) fn operation_remove(session: &mut Session, params: &Value) -> Result<Value, String> {
@@ -693,7 +835,7 @@ pub(crate) fn export_task_gcode(session: &mut Session, params: &Value) -> Result
     let task = project
         .task(OperationId::new(params.task))
         .ok_or_else(|| format!("task {} does not exist", params.task))?;
-    let program = generate_task_gcode(project, task)?;
+    let program = generate_task_gcode(project, session.tool_library(), task)?;
     write_program(&params.path, &program)?;
     Ok(program_json(
         &params.path,
@@ -705,7 +847,7 @@ pub(crate) fn export_task_gcode(session: &mut Session, params: &Value) -> Result
 pub(crate) fn export_gcode(session: &mut Session, params: &Value) -> Result<Value, String> {
     let params: ExportGcodeParams = parse_params(params)?;
     let project = session.project();
-    let program = generate_all_gcode(project)?;
+    let program = generate_all_gcode(project, session.tool_library())?;
     write_program(&params.path, &program)?;
     Ok(program_json(&params.path, &program, None))
 }
@@ -724,6 +866,7 @@ fn program_json(path: &Path, program: &pbc_cam_core::GcodeProgram, task: Option<
         "holes": program.hole_count,
         "slots": program.slot_count,
         "paths": program.path_count,
+        "helical_holes": program.helical_hole_count,
         "cut_length_mm": program.cut_length_mm,
         "bytes": program.text.len(),
     })
@@ -833,12 +976,7 @@ fn display_stem(name: &str) -> String {
 }
 
 fn parse_tool_kind(kind: &str) -> Result<ToolKind, String> {
-    match kind {
-        "drill" => Ok(ToolKind::Drill),
-        "isolation" => Ok(ToolKind::Isolation),
-        "cutout" => Ok(ToolKind::Cutout),
-        other => Err(format!("unknown tool kind `{other}`")),
-    }
+    ToolKind::parse(kind)
 }
 
 fn validate_diameter(diameter: f64) -> Result<(), String> {
@@ -917,8 +1055,14 @@ M30
             )
             .unwrap();
         assert_eq!(session.project().layers().len(), 1);
-        assert_eq!(session.project().tools().len(), 1);
-        assert_eq!(session.project().tools()[0].diameter_mm(), 0.8);
+        let layer = session.project().layers()[0].id();
+        let LayerGeometry::Excellon(excellon) = session.project().layer(layer).unwrap().geometry()
+        else {
+            panic!("expected an Excellon layer");
+        };
+        assert_eq!(excellon.tools.len(), 1);
+        assert_eq!(excellon.tools[0].diameter_mm, 0.8);
+        assert!(session.tool_library().len() >= 6);
     }
 
     #[test]
@@ -965,6 +1109,101 @@ M30
         assert!(error.to_string().contains("depth"));
         assert_eq!(session.project().layers().len(), before.layers().len());
         assert!(session.project().operations().is_empty());
+    }
+
+    #[test]
+    fn machining_tool_library_can_be_edited_without_touching_the_project() {
+        let mut session = Session::new();
+        let before = session.tool_library().len();
+        let created = session
+            .execute(
+                "tool.create",
+                &json!({
+                    "name": "PCB engraver",
+                    "kind": "v_bit",
+                    "diameter": 0.25,
+                    "feed": 250.0,
+                    "plunge": 80.0,
+                    "spindle": 14000,
+                }),
+            )
+            .unwrap();
+        let id = created["id"].as_u64().unwrap();
+        assert_eq!(session.tool_library().len(), before + 1);
+        assert_eq!(
+            session.tool_library().tool(ToolId::new(id)).unwrap().name(),
+            "PCB engraver"
+        );
+        assert!(session.project().tasks().is_empty());
+
+        session
+            .execute("tool.update", &json!({"id": id, "name": "Engraver 0.25"}))
+            .unwrap();
+        assert_eq!(
+            session.tool_library().tool(ToolId::new(id)).unwrap().name(),
+            "Engraver 0.25"
+        );
+        session.execute("tool.remove", &json!({"id": id})).unwrap();
+        assert!(session.tool_library().tool(ToolId::new(id)).is_none());
+    }
+
+    #[test]
+    fn a_tool_used_by_a_task_cannot_be_removed() {
+        let mut session = Session::new();
+        let import = session
+            .execute(
+                "file.import_excellon",
+                &json!({"content": EXCELLON, "name": "Drills"}),
+            )
+            .unwrap();
+        let layer = import["layer"].as_u64().unwrap();
+        session
+            .execute("task.add_drill", &json!({"layer": layer}))
+            .unwrap();
+        let tool = session.project().tasks()[0].tool();
+        let error = session
+            .execute("tool.remove", &json!({"id": tool.value()}))
+            .unwrap_err();
+        assert!(error.to_string().contains("used by"));
+    }
+
+    #[test]
+    fn task_source_filter_and_machining_tool_can_be_changed() {
+        let mut session = Session::new();
+        let import = session
+            .execute(
+                "file.import_excellon",
+                &json!({"content": EXCELLON, "name": "Drills"}),
+            )
+            .unwrap();
+        let layer = import["layer"].as_u64().unwrap();
+        let created = session
+            .execute("task.add_drill", &json!({"layer": layer}))
+            .unwrap();
+        let task = created["id"].as_u64().unwrap();
+        let end_mill = session
+            .tool_library()
+            .closest(ToolKind::EndMill, 1.0)
+            .unwrap()
+            .value();
+        session
+            .execute(
+                "task.update_drill",
+                &json!({
+                    "id": task,
+                    "tool": end_mill,
+                    "source_tools": [1],
+                    "stepdown": 0.3,
+                }),
+            )
+            .unwrap();
+        let task = session.project().task(OperationId::new(task)).unwrap();
+        assert_eq!(task.tool(), ToolId::new(end_mill));
+        let OperationKind::Drill(drill) = task.kind() else {
+            panic!("expected drill task");
+        };
+        assert_eq!(drill.source_tools.len(), 1);
+        assert_eq!(drill.stepdown_mm, 0.3);
     }
 
     #[test]

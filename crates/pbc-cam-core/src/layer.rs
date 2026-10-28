@@ -3,7 +3,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::geometry::{Bounds, LayerGeometry};
+use std::collections::BTreeMap;
+
+use crate::geometry::{Bounds, LayerGeometry, Primitive};
 
 /// Stable identifier of a layer inside a [`Project`](crate::Project).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -173,6 +175,91 @@ impl Layer {
     /// Non-fatal import warnings.
     pub fn warnings(&self) -> &[String] {
         self.geometry.warnings()
+    }
+}
+
+/// A read-only tool/aperture found in a source fabrication file.
+///
+/// These identify objects for task filtering. They are deliberately separate
+/// from the user's machining tool library.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceToolInfo {
+    /// Excellon tool number, when applicable.
+    pub number: Option<u32>,
+    /// Nominal diameter, when known.
+    pub diameter_mm: Option<f64>,
+    /// Human-readable shape.
+    pub label: String,
+    /// Number of source objects made with this tool.
+    pub count: usize,
+}
+
+impl Layer {
+    /// Read-only tools/apertures present in this source layer.
+    pub fn source_tools(&self) -> Vec<SourceToolInfo> {
+        match self.geometry.as_ref() {
+            LayerGeometry::Excellon(excellon) => {
+                let mut tools: Vec<SourceToolInfo> = excellon
+                    .tools
+                    .iter()
+                    .map(|tool| SourceToolInfo {
+                        number: Some(tool.number),
+                        diameter_mm: Some(tool.diameter_mm),
+                        label: format!("T{} · Ø{:.3} mm", tool.number, tool.diameter_mm),
+                        count: excellon
+                            .holes
+                            .iter()
+                            .filter(|hole| hole.tool == tool.number)
+                            .count()
+                            + excellon
+                                .slots
+                                .iter()
+                                .filter(|slot| slot.tool == tool.number)
+                                .count(),
+                    })
+                    .collect();
+                for hole in &excellon.holes {
+                    if !tools.iter().any(|tool| tool.number == Some(hole.tool)) {
+                        tools.push(SourceToolInfo {
+                            number: Some(hole.tool),
+                            diameter_mm: Some(hole.diameter_mm),
+                            label: format!("T{} · Ø{:.3} mm", hole.tool, hole.diameter_mm),
+                            count: 1,
+                        });
+                    }
+                }
+                tools
+            }
+            LayerGeometry::Gerber(gerber) => {
+                let mut groups: BTreeMap<String, (Option<f64>, usize)> = BTreeMap::new();
+                for primitive in &gerber.primitives {
+                    let aperture = match primitive {
+                        Primitive::Stroke { aperture, .. } | Primitive::Flash { aperture, .. } => {
+                            aperture
+                        }
+                        Primitive::Region { .. } => continue,
+                    };
+                    let label = aperture.label();
+                    let diameter = match aperture.shape {
+                        crate::geometry::ApertureShape::Circle { diameter } => Some(diameter),
+                        _ => None,
+                    };
+                    groups
+                        .entry(label)
+                        .and_modify(|(_, count)| *count += 1)
+                        .or_insert((diameter, 1));
+                }
+                groups
+                    .into_iter()
+                    .map(|(label, (diameter, count))| SourceToolInfo {
+                        number: None,
+                        diameter_mm: diameter,
+                        label,
+                        count,
+                    })
+                    .collect()
+            }
+        }
     }
 }
 

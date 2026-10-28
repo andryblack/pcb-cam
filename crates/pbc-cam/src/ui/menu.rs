@@ -201,7 +201,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(
-                        RichText::new(format!("v{}  /  Milestone 3", app::VERSION))
+                        RichText::new(format!("v{}  /  Milestone 4", app::VERSION))
                             .size(10.0)
                             .color(theme::TEXT_FAINT),
                     );

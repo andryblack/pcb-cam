@@ -4,16 +4,25 @@
 
 PBC-CAM turns Gerber and Excellon fabrication data into CNC control programs. It is a native desktop application written in Rust with [egui](https://github.com/emilk/egui)/[eframe](https://github.com/emilk/egui/tree/main/crates/eframe), inspired by [FlatCAM](http://flatcam.org/).
 
-![PBC-CAM application window with four fabrication layers and three tasks](docs/screenshot.png)
+![PBC-CAM with source tools, a machining tool library and a task timeline](docs/screenshot.png)
 
 ## Project status
 
-**Milestone 3: task timeline and G-code — complete.**
+**Milestone 4: source tools, machining tools and filtered tasks — complete.**
 
-A project is built from source layers and an ordered list of **tasks**. Each task
-has its own type-specific settings. A CNC program can be generated from one
-selected task or from all enabled tasks in order, with automatic tool changes
-(`M6`) between different cutter diameters.
+The project keeps two deliberately separate tool concepts:
+
+- **Source tools** are read-only apertures and drill tools found in Gerber and
+  Excellon files. They describe the fabrication data. Excellon source tools are
+  used to filter which holes/slots a task machines.
+- **Machining tools** live in the user's own library: drills, end mills and
+  V-bits with diameter, feed, plunge and spindle defaults. Every task references
+  exactly one machining tool. The library is shared between projects and
+  persisted in the application settings.
+
+G-code can be generated for one task or for all enabled tasks in timeline order.
+Tool changes (`T… M6`) are driven by the task machining tools, not by source
+drill diameters.
 
 Implemented:
 
@@ -21,7 +30,7 @@ Implemented:
 - Dark CAD workspace with browser, canvas, inspector and task timeline
 - Gerber RS-274X import using [`gerber_parser`](https://crates.io/crates/gerber_parser) for the tokenizer, command AST and aperture macros:
   - lines, arcs, regions and flashes
-  - standard circle/rectangle/obround/polygon apertures
+  - circle/rectangle/obround/polygon apertures
   - parameterised aperture macros (for example KiCad `RoundRect`)
   - dark/clear polarity
   - units and coordinate-format conversion to millimetres
@@ -30,39 +39,68 @@ Implemented:
   - fixed-format and decimal coordinates
   - tool definitions, drill hits and `G85` slots
 - Canvas layer rendering with fit-to-project, pan/zoom, grid, axes and scale bar
-- Layer browser with visibility and selection; automatic drill tool table
+- Layer browser with visibility and selection
+- **Source tool browser**:
+  - Excellon tools with number, diameter and object count
+  - Gerber aperture summaries with object counts
+  - read-only; Excellon tools filter drilling tasks
+- **User machining tool library**:
+  - add, edit and remove drills, end mills and V-bits
+  - diameter, feed, plunge and spindle defaults
+  - persisted across restarts and shared by all projects
+  - used by every task; a tool in use cannot be removed
 - **Tasks** with type-specific settings:
-  - **Drilling** — all holes and slots from an Excellon layer, depth, retract, feed, plunge, dwell, spindle
-  - **Contour cut** — follows closed Gerber contours with an outside/inside/on-line cutter offset, tool diameter, depth and feeds
-  - **Engraving** — follows Gerber strokes, region outlines and flashed-pad outlines with a small tool, depth and feeds
-- Task timeline with selection, enable/disable, creation from the browser, toolbar, menu or timeline, and a type-specific parameter editor
+  - **Drilling** — source-hole filter, machining tool, depth, retract, feed, plunge, dwell, helical step-down, spindle
+  - **Contour cut** — machining tool, outside/inside/on-line offset, depth, retract, feed, plunge, spindle
+  - **Engraving** — machining tool, depth, retract, feed, plunge, spindle
+- Task timeline with selection, enable/disable, creation, reordering and a type-specific parameter editor
+- **Helical interpolation** for holes larger than the selected end mill/V-bit. A 1.0 mm end mill can machine a 1.5 mm hole with a helical path; a drill bit is rejected because it cannot side-cut.
 - G-code export:
-  - **selected task** only, for checking or running one operation
-  - **all enabled tasks** as one program, in timeline order, with `T… M6` tool changes and shared tool numbering by diameter
-- Undo/redo for imports, layers, tools and tasks
+  - selected task only
+  - all enabled tasks in timeline order
+  - automatic `T… M6` changes between different machining tools
+- Undo/redo for imports, layers and tasks
 - Native file dialogs, drag-and-drop import and a bundled demo project
 - GUI-independent core crate and a command-driven engine crate
 - Cross-platform CI builds and a macOS application bundle script
 
+### Example: one drill task per hole group
+
+Suppose an Excellon file contains holes of 0.3, 1.0 and 1.5 mm, and the user
+library contains a 0.3 mm drill and a 1.0 mm end mill:
+
+1. Create a drilling task, select **Drill 0.30 mm** and check only source tool
+   `T1` (the 0.3 mm holes).
+2. Create a second drilling task on the same layer, select **End mill 1.00 mm**
+   and check the source tools for the 1.0 and 1.5 mm holes.
+3. Export all tasks. The combined program changes from the 0.3 mm drill to the
+   1.0 mm end mill once, plunge-drills the 1.0 mm holes and helically machines
+   the 1.5 mm holes.
+
+This separation is the point: the source tool says **which objects belong to a
+task**, while the machining tool says **what cutter performs the work**.
+
 Next:
 
+- Use Gerber source tools (apertures) to filter cut-out and engraving objects
 - Engraving area fill / hatch patterns in addition to contour engraving
 - Contour cut tabs and multi-pass depth stepping
 - Isolation routing around copper
 - Project save/load (`.pbcam` or JSON)
 - G-code preview and machine simulation
-- Tool-table editing and machine/post-processor profiles
-- A larger Gerber/Excellon compatibility corpus and reference tests
+- Machine/post-processor profiles and tool wear data
 
 ### Known limitations
 
 - Import geometry is flattened to millimetres at load time; the source path is kept on the layer.
 - Gerber step-and-repeat, aperture blocks and negative image polarity are not fully supported yet; import reports warnings instead of failing.
+- Gerber source apertures are listed, but currently only **drilling tasks** use source tools as filters. Contour-cut and engraving tasks process the whole layer.
 - Regions are drawn as polygons; complex holes cut through a region are not boolean-subtracted.
-- Contour offsets use mitred joins without a full self-intersection cleanup. Simple board outlines work; very concave contours may need a proper offset kernel.
-- Engraving follows outlines and paths; filled/hardened area clearing is not implemented yet.
-- Projects are not saved yet; generated G-code is currently the durable output.
-- G-code is emitted in millimetres with explicit drill/plunge moves. It does not yet include machine-specific headers, tool-change preferences, work offsets or cutter compensation.
+- Contour offsets use mitred joins without a full self-intersection cleanup.
+- Engraving follows outlines and paths; filled/hardened area clearing is not implemented.
+- Slots narrower than the machining tool are rejected; wider slots are routed on the centreline, which may not clear the full slot width.
+- Projects are not saved yet; the machining tool library is persisted, generated G-code is the durable output.
+- G-code is emitted in millimetres with explicit drill/plunge moves. It does not yet include machine-specific headers, work offsets or cutter compensation.
 
 ## Requirements
 
@@ -84,7 +122,7 @@ sudo apt-get install -y \
 # Development build and run
 cargo run -p pbc-cam
 
-# Start with the bundled demo board (4 layers, 3 tasks)
+# Start with the bundled demo board (4 layers, 4 tasks)
 cargo run -p pbc-cam -- --sample
 
 # Open fabrication files directly
@@ -106,22 +144,30 @@ open dist/PBC-CAM.app
 
 The script builds a release binary, assembles `PBC-CAM.app` with the app icon and `Info.plist`, ad-hoc signs it and creates `dist/PBC-CAM-macos.zip`.
 
-## Working with tasks
+## Working with tools and tasks
 
 1. Import Gerber layers with **File → Import Gerber…** or the **Gerber** toolbar button.
-2. Import an Excellon file with **File → Import Excellon…** or the **Excellon** button. Drill tools are added to the browser automatically.
-3. Add a task from **+ Task** in the toolbar/timeline or from the browser when a suitable layer is selected:
+2. Import an Excellon file with **File → Import Excellon…** or the **Excellon** button.
+3. Select a layer to inspect its **Source tools** in the browser and inspector.
+   These are read-only and come from the fabrication file.
+4. Open **Machining tools → + Machining tool** to add your own cutter, or select
+   a library tool and use **Edit tool…** in the inspector. The library is saved
+   automatically in the application settings.
+5. Add a task from **+ Task** in the toolbar/timeline or from the browser when a
+   suitable layer is selected:
    - **Drilling** needs an Excellon layer.
    - **Contour cut** needs a Gerber layer with closed contours.
    - **Engraving** needs a Gerber layer with paths.
-4. Select the task and edit its parameters in the inspector with **Edit task…**. Each task type exposes only its own settings.
-5. Export:
+6. Open the task editor. Choose one **machining tool**, and for drilling check
+   the **source tools** (hole groups) that this task should machine.
+7. Export:
    - **File → Export Selected Task G-code…** or the inspector's **Export task G-code…** for one task.
    - **File → Export All Tasks G-code…** or the timeline's **Export all G-code** for the combined program with tool changes.
 
 The demo project contains top copper, a rounded board outline with arcs, a
-silkscreen legend and a drill file, set up as three tasks: drill, contour cut and
-engrave.
+silkscreen legend and a drill file. It is set up as four tasks: two drilling
+tasks with different source filters and machining tools, a contour cut and an
+engraving pass.
 
 ## Quality checks
 
@@ -138,7 +184,7 @@ cargo test --workspace --locked
 ├── crates/
 │   ├── pbc-cam/            # Desktop application (eframe/egui)
 │   │   └── src/
-│   │       ├── app.rs      # Application state, commands, task editor
+│   │       ├── app.rs      # Application state, commands, editors
 │   │       ├── theme.rs    # PBC-CAM palette and egui style
 │   │       ├── view.rs     # Canvas camera and unit formatting
 │   │       └── ui/         # Menu, toolbar, browser, timeline, viewport
@@ -148,9 +194,10 @@ cargo test --workspace --locked
 │           ├── formats/    # Gerber and Excellon importers
 │           ├── geometry.rs # Points, paths, apertures, offset contours
 │           ├── gcode.rs    # Task and combined G-code post-processor
-│           ├── layer.rs    # Source layers and colours
+│           ├── layer.rs    # Source layers, colours, source-tool metadata
 │           ├── operation.rs # Task timeline (Task aliases)
-│           ├── project.rs  # Project, tools and tasks
+│           ├── project.rs  # Project and tasks
+│           ├── tool.rs     # Machining tools and user tool library
 │           └── units.rs    # Millimetres/inches
 ├── assets/
 │   ├── samples/            # Synthetic demo Gerber/Excellon project
@@ -170,9 +217,12 @@ pbc-cam-core  ←  pbc-cam-engine  ←  pbc-cam
 (domain/import)   (session/commands)   (egui front end)
 ```
 
-- **core** owns the project model, geometry, importers, task types, contour offsets and G-code generation and has no GUI dependencies.
+- **core** owns the project model, source geometry, source-tool metadata, the
+  machining tool library type, contour offsets and G-code generation. It has no GUI dependencies.
 - **engine** owns a `Session`, executes JSON commands such as `file.import_gerber`,
-  `task.add_cutout`, `file.export_task_gcode` and `edit.undo`, and keeps undo/redo snapshots.
+  `task.add_cutout`, `tool.create`, `file.export_task_gcode` and `edit.undo`, and
+  keeps project undo/redo snapshots. The machining library belongs to the session
+  and is intentionally not project-undoable.
 - **pbc-cam** is a thin egui front end. It calls commands instead of mutating the
   project directly, so future CLI and automation clients can reuse the same registry.
 

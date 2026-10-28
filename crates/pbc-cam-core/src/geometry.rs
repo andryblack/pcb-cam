@@ -263,6 +263,22 @@ impl Aperture {
         }
     }
 
+    /// Human-readable shape summary for source-tool lists.
+    pub fn label(&self) -> String {
+        match self.shape {
+            ApertureShape::Circle { diameter } => format!("Ø{diameter:.3} mm"),
+            ApertureShape::Rectangle { width, height } => {
+                format!("{width:.2} × {height:.2} mm")
+            }
+            ApertureShape::Obround { width, height } => {
+                format!("obround {width:.2} × {height:.2} mm")
+            }
+            ApertureShape::Polygon {
+                diameter, vertices, ..
+            } => format!("polygon {vertices} × Ø{diameter:.2} mm"),
+        }
+    }
+
     /// Outline vertices of the aperture around `center`.
     pub fn outline(&self, center: Point, rotation_degrees: f64) -> Vec<Point> {
         let rotation = rotation_degrees.to_radians();

@@ -16,6 +16,7 @@ enum InspectorAction {
     Fit,
     ExportTask,
     EditTask,
+    EditTool,
     SetUnits(Unit),
     MoveTask(OperationId, usize),
     AddDrill,
@@ -85,6 +86,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         Some(InspectorAction::Fit) => app.fit_view(),
         Some(InspectorAction::ExportTask) => app.export_task_gcode_dialog(),
         Some(InspectorAction::EditTask) => app.open_task_editor(),
+        Some(InspectorAction::EditTool) => app.open_tool_editor(),
         Some(InspectorAction::SetUnits(units)) => app.set_units(units),
         Some(InspectorAction::MoveTask(id, target)) => {
             app.run_command(
@@ -115,7 +117,11 @@ fn project_overview(ui: &mut Ui, app: &PbcCam, action: &mut Option<InspectorActi
         ui.set_width(ui.available_width());
         widgets::field_row(ui, "Name", app.project().name());
         widgets::field_row(ui, "Layers", &app.project().layers().len().to_string());
-        widgets::field_row(ui, "Tools", &app.project().tools().len().to_string());
+        widgets::field_row(
+            ui,
+            "Machining tools",
+            &app.session.tool_library().len().to_string(),
+        );
         widgets::field_row(ui, "Tasks", &app.project().tasks().len().to_string());
         widgets::field_row(ui, "Objects", &app.project().object_count().to_string());
         if let Some(bounds) = app.project().bounds(true) {
@@ -194,6 +200,41 @@ fn layer_details(ui: &mut Ui, app: &PbcCam, id: LayerId, action: &mut Option<Ins
         ui.label(RichText::new(warning).size(10.0).color(theme::COPPER));
     }
 
+    let source_tools = layer.source_tools();
+    ui.add_space(10.0);
+    widgets::section_label(ui, "Source tools");
+    ui.add_space(3.0);
+    if source_tools.is_empty() {
+        ui.label(
+            RichText::new("No aperture/tool metadata in this layer.")
+                .size(10.0)
+                .color(theme::TEXT_FAINT),
+        );
+    } else {
+        for tool in &source_tools {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(&tool.label)
+                        .size(10.5)
+                        .monospace()
+                        .color(theme::TEXT_MUTED),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!("{} obj", tool.count))
+                            .size(9.5)
+                            .color(theme::TEXT_FAINT),
+                    );
+                });
+            });
+        }
+        ui.label(
+            RichText::new("Read-only. Excellon tools filter drilling tasks.")
+                .size(9.0)
+                .color(theme::TEXT_FAINT),
+        );
+    }
+
     ui.add_space(10.0);
     if ui.button("Fit project").clicked() {
         *action = Some(InspectorAction::Fit);
@@ -228,7 +269,7 @@ fn layer_details(ui: &mut Ui, app: &PbcCam, id: LayerId, action: &mut Option<Ins
 }
 
 fn tool_details(ui: &mut Ui, app: &PbcCam, id: ToolId, action: &mut Option<InspectorAction>) {
-    let Some(tool) = app.project().tool(id).cloned() else {
+    let Some(tool) = app.session.tool_library().tool(id).cloned() else {
         return;
     };
     widgets::card_frame().show(ui, |ui| {
@@ -249,12 +290,19 @@ fn tool_details(ui: &mut Ui, app: &PbcCam, id: ToolId, action: &mut Option<Inspe
         widgets::field_row(ui, "Feed", &format!("{:.0} mm/min", tool.feed_mm_min()));
         widgets::field_row(ui, "Plunge", &format!("{:.0} mm/min", tool.plunge_mm_min()));
         widgets::field_row(ui, "Spindle", &format!("{} rpm", tool.spindle_rpm()));
-        if let Some(layer) = tool.source_layer().and_then(|id| app.project().layer(id)) {
-            widgets::field_row(ui, "Source layer", layer.name());
-        }
     });
 
     ui.add_space(10.0);
+    if ui
+        .add_sized(
+            vec2(ui.available_width(), 26.0),
+            Button::new(RichText::new("Edit tool…").size(11.0)),
+        )
+        .clicked()
+    {
+        *action = Some(InspectorAction::EditTool);
+    }
+    ui.add_space(4.0);
     if ui
         .add_sized(
             vec2(ui.available_width(), 26.0),
@@ -275,6 +323,8 @@ fn task_details(ui: &mut Ui, app: &PbcCam, id: OperationId, action: &mut Option<
         .project()
         .layer(task.source_layer())
         .map_or("Missing layer", |layer| layer.name());
+    let tool = app.session.tool_library().tool(task.tool());
+    let tool_text = tool.map_or_else(|| "Missing tool".to_owned(), |tool| tool.name().to_owned());
 
     widgets::card_frame().show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -295,10 +345,13 @@ fn task_details(ui: &mut Ui, app: &PbcCam, id: OperationId, action: &mut Option<
             *action = Some(InspectorAction::ToggleTask(id, enabled));
         }
         widgets::field_row(ui, "Source", layer_name);
+        widgets::field_row(ui, "Machining tool", &tool_text);
 
         match task.kind() {
             OperationKind::Drill(drill) => {
-                let (holes, slots) = drill_counts(app, drill.layer);
+                let (holes, slots) = drill_counts(app, drill);
+                let filter = source_filter_label(app, drill);
+                widgets::field_row(ui, "Source tools", &filter);
                 widgets::field_row(ui, "Holes", &holes.to_string());
                 widgets::field_row(ui, "Slots", &slots.to_string());
                 widgets::field_row(ui, "Depth", &format!("{:.2} mm", drill.depth_mm));
@@ -306,10 +359,10 @@ fn task_details(ui: &mut Ui, app: &PbcCam, id: OperationId, action: &mut Option<
                 widgets::field_row(ui, "Feed", &format!("{:.0} mm/min", drill.feed_mm_min));
                 widgets::field_row(ui, "Plunge", &format!("{:.0} mm/min", drill.plunge_mm_min));
                 widgets::field_row(ui, "Dwell", &format!("{:.2} s", drill.dwell_s));
+                widgets::field_row(ui, "Step-down", &format!("{:.2} mm", drill.stepdown_mm));
                 widgets::field_row(ui, "Spindle", &format!("{} rpm", drill.spindle_rpm));
             }
             OperationKind::Cutout(cutout) => {
-                widgets::field_row(ui, "Tool", &format!("Ø {:.3} mm", cutout.tool_diameter_mm));
                 widgets::field_row(ui, "Side", cutout.side.label());
                 widgets::field_row(ui, "Depth", &format!("{:.2} mm", cutout.depth_mm));
                 widgets::field_row(ui, "Retract", &format!("{:.2} mm", cutout.retract_mm));
@@ -318,7 +371,6 @@ fn task_details(ui: &mut Ui, app: &PbcCam, id: OperationId, action: &mut Option<
                 widgets::field_row(ui, "Spindle", &format!("{} rpm", cutout.spindle_rpm));
             }
             OperationKind::Engrave(engrave) => {
-                widgets::field_row(ui, "Tool", &format!("Ø {:.3} mm", engrave.tool_diameter_mm));
                 widgets::field_row(ui, "Depth", &format!("{:.2} mm", engrave.depth_mm));
                 widgets::field_row(ui, "Retract", &format!("{:.2} mm", engrave.retract_mm));
                 widgets::field_row(ui, "Feed", &format!("{:.0} mm/min", engrave.feed_mm_min));
@@ -390,11 +442,46 @@ fn task_details(ui: &mut Ui, app: &PbcCam, id: OperationId, action: &mut Option<
     });
 }
 
-fn drill_counts(app: &PbcCam, layer: LayerId) -> (usize, usize) {
+fn source_filter_label(app: &PbcCam, drill: &pbc_cam_core::DrillTask) -> String {
+    let Some(layer) = app.project().layer(drill.layer) else {
+        return "missing source".to_owned();
+    };
+    if drill.source_tools.is_empty() {
+        return "all".to_owned();
+    }
+    let labels: Vec<String> = layer
+        .source_tools()
+        .into_iter()
+        .filter(|tool| {
+            tool.number
+                .is_some_and(|number| drill.source_tools.contains(&number))
+        })
+        .map(|tool| format!("T{}", tool.number.unwrap_or_default()))
+        .collect();
+    if labels.is_empty() {
+        "none".to_owned()
+    } else {
+        labels.join(", ")
+    }
+}
+
+fn drill_counts(app: &PbcCam, drill: &pbc_cam_core::DrillTask) -> (usize, usize) {
+    let selected = |tool: u32| drill.source_tools.is_empty() || drill.source_tools.contains(&tool);
     app.project()
-        .layer(layer)
+        .layer(drill.layer)
         .and_then(|layer| match layer.geometry() {
-            LayerGeometry::Excellon(excellon) => Some((excellon.holes.len(), excellon.slots.len())),
+            LayerGeometry::Excellon(excellon) => Some((
+                excellon
+                    .holes
+                    .iter()
+                    .filter(|hole| selected(hole.tool))
+                    .count(),
+                excellon
+                    .slots
+                    .iter()
+                    .filter(|slot| selected(slot.tool))
+                    .count(),
+            )),
             LayerGeometry::Gerber(_) => None,
         })
         .unwrap_or((0, 0))

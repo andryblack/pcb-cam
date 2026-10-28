@@ -1,11 +1,12 @@
 //! Application state and top-level egui layout.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use eframe::egui::{self, Align2, Button, Key, Modifiers, RichText, Stroke, Vec2};
 use pbc_cam_core::{
     ContourSide, LayerGeometry, LayerId, OperationId, OperationKind, Project, SourceFormat, Task,
-    ToolId, Unit,
+    Tool, ToolId, ToolKind, ToolLibrary, Unit,
 };
 use pbc_cam_engine::{Session, find_command};
 use serde_json::{Value, json};
@@ -83,15 +84,18 @@ impl Default for ViewSettings {
 #[derive(Debug, Clone)]
 pub(crate) enum TaskEditorKind {
     Drill {
+        tool: ToolId,
+        source_tools: BTreeSet<u32>,
         depth: f64,
         retract: f64,
         feed: f64,
         plunge: f64,
         dwell: f64,
+        stepdown: f64,
         spindle: u32,
     },
     Cutout {
-        tool: f64,
+        tool: ToolId,
         side: ContourSide,
         depth: f64,
         retract: f64,
@@ -100,7 +104,7 @@ pub(crate) enum TaskEditorKind {
         spindle: u32,
     },
     Engrave {
-        tool: f64,
+        tool: ToolId,
         depth: f64,
         retract: f64,
         feed: f64,
@@ -124,16 +128,29 @@ impl TaskEditor {
     fn from_task(project: &Project, task: &Task) -> Option<Self> {
         let layer = project.layer(task.source_layer())?;
         let kind = match task.kind() {
-            OperationKind::Drill(drill) => TaskEditorKind::Drill {
-                depth: drill.depth_mm,
-                retract: drill.retract_mm,
-                feed: drill.feed_mm_min,
-                plunge: drill.plunge_mm_min,
-                dwell: drill.dwell_s,
-                spindle: drill.spindle_rpm,
-            },
+            OperationKind::Drill(drill) => {
+                let mut source_tools = drill.source_tools.clone();
+                if source_tools.is_empty() {
+                    for tool in layer.source_tools() {
+                        if let Some(number) = tool.number {
+                            source_tools.insert(number);
+                        }
+                    }
+                }
+                TaskEditorKind::Drill {
+                    tool: drill.tool,
+                    source_tools,
+                    depth: drill.depth_mm,
+                    retract: drill.retract_mm,
+                    feed: drill.feed_mm_min,
+                    plunge: drill.plunge_mm_min,
+                    dwell: drill.dwell_s,
+                    stepdown: drill.stepdown_mm,
+                    spindle: drill.spindle_rpm,
+                }
+            }
             OperationKind::Cutout(cutout) => TaskEditorKind::Cutout {
-                tool: cutout.tool_diameter_mm,
+                tool: cutout.tool,
                 side: cutout.side,
                 depth: cutout.depth_mm,
                 retract: cutout.retract_mm,
@@ -142,7 +159,7 @@ impl TaskEditor {
                 spindle: cutout.spindle_rpm,
             },
             OperationKind::Engrave(engrave) => TaskEditorKind::Engrave {
-                tool: engrave.tool_diameter_mm,
+                tool: engrave.tool,
                 depth: engrave.depth_mm,
                 retract: engrave.retract_mm,
                 feed: engrave.feed_mm_min,
@@ -161,6 +178,47 @@ impl TaskEditor {
     }
 }
 
+/// A modal draft of a machining tool.
+#[derive(Debug, Clone)]
+pub(crate) struct ToolEditor {
+    pub(crate) id: Option<ToolId>,
+    pub(crate) name: String,
+    pub(crate) kind: ToolKind,
+    pub(crate) diameter: f64,
+    pub(crate) feed: f64,
+    pub(crate) plunge: f64,
+    pub(crate) spindle: u32,
+    pub(crate) error: Option<String>,
+}
+
+impl ToolEditor {
+    fn new() -> Self {
+        Self {
+            id: None,
+            name: "End mill 1.00 mm".to_owned(),
+            kind: ToolKind::EndMill,
+            diameter: 1.0,
+            feed: 300.0,
+            plunge: 120.0,
+            spindle: 12_000,
+            error: None,
+        }
+    }
+
+    fn from_tool(tool: &Tool) -> Self {
+        Self {
+            id: Some(tool.id()),
+            name: tool.name().to_owned(),
+            kind: tool.kind(),
+            diameter: tool.diameter_mm(),
+            feed: tool.feed_mm_min(),
+            plunge: tool.plunge_mm_min(),
+            spindle: tool.spindle_rpm(),
+            error: None,
+        }
+    }
+}
+
 /// Top-level application state.
 #[derive(Debug)]
 pub struct PbcCam {
@@ -173,6 +231,7 @@ pub struct PbcCam {
     pub(crate) about_open: bool,
     pub(crate) shortcuts_open: bool,
     pub(crate) task_editor: Option<TaskEditor>,
+    pub(crate) tool_editor: Option<ToolEditor>,
     pub(crate) fit_requested: bool,
     window_title: String,
 }
@@ -183,8 +242,16 @@ impl PbcCam {
         theme::apply(&cc.egui_ctx);
         log::info!("starting {APP_NAME} {VERSION}");
 
+        let mut session = Session::new();
+        if let Some(storage) = cc.storage
+            && let Some(json) = storage.get_string("machining_tool_library")
+            && let Ok(library) = serde_json::from_str::<ToolLibrary>(&json)
+        {
+            session.set_tool_library(library);
+        }
+
         Self {
-            session: Session::new(),
+            session,
             view: ViewState::default(),
             settings: ViewSettings::default(),
             selection: None,
@@ -193,6 +260,7 @@ impl PbcCam {
             about_open: false,
             shortcuts_open: false,
             task_editor: None,
+            tool_editor: None,
             fit_requested: false,
             window_title: WINDOW_TITLE.to_owned(),
         }
@@ -219,7 +287,7 @@ impl PbcCam {
     fn validate_selection(&mut self) {
         let valid = match self.selection {
             Some(Selection::Layer(id)) => self.project().layer(id).is_some(),
-            Some(Selection::Tool(id)) => self.project().tool(id).is_some(),
+            Some(Selection::Tool(id)) => self.session.tool_library().tool(id).is_some(),
             Some(Selection::Task(id)) => self.project().task(id).is_some(),
             None => true,
         };
@@ -626,31 +694,72 @@ impl PbcCam {
         let outline = layer_id("Demo Board Outline");
         let silk = layer_id("Demo Silkscreen");
 
-        let mut last_task = None;
+        let library = self.session.tool_library();
+        let small_drill = library
+            .closest(ToolKind::Drill, 0.8)
+            .map(|tool| tool.value());
+        let end_mill = library
+            .closest(ToolKind::EndMill, 1.0)
+            .map(|tool| tool.value());
+        let v_bit = library
+            .closest(ToolKind::VBit, 0.2)
+            .or_else(|| library.closest(ToolKind::EndMill, 0.2))
+            .map(|tool| tool.value());
+
+        let mut task_ids = Vec::new();
         for (command, params) in [
-            ("task.add_drill", json!({"layer": drill, "depth": 1.6})),
+            (
+                "task.add_drill",
+                json!({
+                    "layer": drill,
+                    "tool": small_drill,
+                    "source_tools": [1],
+                    "depth": 1.6,
+                    "name": "Drill 0.8",
+                }),
+            ),
+            (
+                "task.add_drill",
+                json!({
+                    "layer": drill,
+                    "tool": end_mill,
+                    "source_tools": [2, 3],
+                    "depth": 1.8,
+                    "name": "Drill 1.0 / 3.0",
+                }),
+            ),
             (
                 "task.add_cutout",
-                json!({"layer": outline, "tool": 1.0, "side": "outside", "depth": 1.8}),
+                json!({
+                    "layer": outline,
+                    "tool": end_mill,
+                    "side": "outside",
+                    "depth": 1.8,
+                }),
             ),
             (
                 "task.add_engrave",
-                json!({"layer": silk, "tool": 0.3, "depth": 0.2}),
+                json!({
+                    "layer": silk,
+                    "tool": v_bit,
+                    "depth": 0.2,
+                }),
             ),
         ] {
             let Some(value) = self.run_command(command, params) else {
                 return;
             };
-            last_task = value
-                .get("id")
-                .and_then(Value::as_u64)
-                .map(OperationId::new);
+            if let Some(id) = value.get("id").and_then(Value::as_u64) {
+                task_ids.push(OperationId::new(id));
+            }
         }
-        self.selection = last_task.map(Selection::Task);
+        self.selection = task_ids
+            .get(1)
+            .or_else(|| task_ids.last())
+            .copied()
+            .map(Selection::Task);
         self.fit_requested = true;
-        self.set_status(
-            "Demo loaded — 4 layers, 3 tasks; G-code can be exported per task or combined",
-        );
+        self.set_status("Demo loaded — 4 layers, 4 tasks, source filters and machining tools");
     }
 
     fn sync_window_title(&mut self, ctx: &egui::Context) {
@@ -763,7 +872,7 @@ impl PbcCam {
                     widgets::field_row(ui, "Version", VERSION);
                     widgets::field_row(ui, "License", "MIT");
                     widgets::field_row(ui, "Built with", "Rust + egui + gerber_parser");
-                    widgets::field_row(ui, "Milestone", "Task timeline + combined G-code");
+                    widgets::field_row(ui, "Milestone", "Source filters + machining tool library");
                     widgets::field_row(
                         ui,
                         "In this project",
@@ -843,6 +952,7 @@ impl PbcCam {
         }
 
         self.show_task_editor(ctx);
+        self.show_tool_editor(ctx);
     }
 
     fn show_task_editor(&mut self, ctx: &egui::Context) {
@@ -853,13 +963,19 @@ impl PbcCam {
         let mut apply = false;
         let mut cancel = false;
         let kind_name = task_editor_kind_name(&editor.kind);
+        let tools = self.session.tool_library().tools().to_vec();
+        let source_tools = self
+            .project()
+            .layer(editor.layer)
+            .map(|layer| layer.source_tools())
+            .unwrap_or_default();
 
         egui::Window::new(format!("{kind_name} task"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .default_width(410.0)
+            .default_width(430.0)
             .frame(dialog_frame())
             .show(ctx, |ui| {
                 widgets::section_label(ui, "Task");
@@ -871,19 +987,84 @@ impl PbcCam {
                     );
                 });
                 ui.label(
-                    RichText::new(format!(
-                        "{kind_name} · source: {} · #{}",
-                        editor.layer_name,
-                        editor.layer.value()
-                    ))
-                    .size(10.5)
-                    .color(theme::TEXT_MUTED),
+                    RichText::new(format!("{kind_name} · source: {}", editor.layer_name))
+                        .size(10.5)
+                        .color(theme::TEXT_MUTED),
                 );
 
                 ui.add_space(10.0);
                 widgets::hairline(ui);
                 ui.add_space(8.0);
-                widgets::section_label(ui, "Settings");
+                widgets::section_label(ui, "Machining tool");
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Tool").size(11.0).color(theme::TEXT_MUTED));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let tool = task_editor_tool_mut(&mut editor.kind);
+                        tool_combo(ui, &tools, tool);
+                    });
+                });
+                if let Some(tool) = tools
+                    .iter()
+                    .find(|tool| Some(tool.id()) == Some(*task_editor_tool_mut(&mut editor.kind)))
+                {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} · {} · Ø{:.3} mm",
+                            tool.name(),
+                            tool.kind().label(),
+                            tool.diameter_mm()
+                        ))
+                        .size(10.0)
+                        .color(theme::TEXT_FAINT),
+                    );
+                }
+
+                if let TaskEditorKind::Drill {
+                    source_tools: selected,
+                    ..
+                } = &mut editor.kind
+                {
+                    ui.add_space(8.0);
+                    widgets::section_label(ui, "Source holes");
+                    ui.add_space(3.0);
+                    if source_tools.is_empty() {
+                        ui.label(
+                            RichText::new("The source layer has no tools.")
+                                .size(10.5)
+                                .color(theme::TEXT_FAINT),
+                        );
+                    } else {
+                        for info in &source_tools {
+                            if let Some(number) = info.number {
+                                let mut checked = selected.contains(&number);
+                                if ui
+                                    .checkbox(
+                                        &mut checked,
+                                        format!("{}  ({} objects)", info.label, info.count),
+                                    )
+                                    .changed()
+                                {
+                                    if checked {
+                                        selected.insert(number);
+                                    } else {
+                                        selected.remove(&number);
+                                    }
+                                }
+                            }
+                        }
+                        ui.label(
+                            RichText::new("Only checked source tools are machined by this task.")
+                                .size(9.5)
+                                .color(theme::TEXT_FAINT),
+                        );
+                    }
+                }
+
+                ui.add_space(10.0);
+                widgets::hairline(ui);
+                ui.add_space(8.0);
+                widgets::section_label(ui, "Cut parameters");
                 ui.add_space(4.0);
 
                 match &mut editor.kind {
@@ -893,25 +1074,27 @@ impl PbcCam {
                         feed,
                         plunge,
                         dwell,
+                        stepdown,
                         spindle,
+                        ..
                     } => {
                         metric_row(ui, "Depth", depth, 0.01..=50.0, " mm");
                         metric_row(ui, "Retract", retract, 0.1..=100.0, " mm");
                         metric_row(ui, "Feed", feed, 1.0..=10_000.0, " mm/min");
                         metric_row(ui, "Plunge", plunge, 1.0..=5_000.0, " mm/min");
                         metric_row(ui, "Dwell", dwell, 0.0..=10.0, " s");
+                        metric_row(ui, "Helical step", stepdown, 0.05..=10.0, " mm");
                         spindle_row(ui, spindle);
                     }
                     TaskEditorKind::Cutout {
-                        tool,
                         side,
                         depth,
                         retract,
                         feed,
                         plunge,
                         spindle,
+                        ..
                     } => {
-                        metric_row(ui, "Tool diameter", tool, 0.05..=10.0, " mm");
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("Cutter side")
@@ -946,14 +1129,13 @@ impl PbcCam {
                         spindle_row(ui, spindle);
                     }
                     TaskEditorKind::Engrave {
-                        tool,
                         depth,
                         retract,
                         feed,
                         plunge,
                         spindle,
+                        ..
                     } => {
-                        metric_row(ui, "Tool diameter", tool, 0.05..=10.0, " mm");
                         metric_row(ui, "Depth", depth, 0.01..=50.0, " mm");
                         metric_row(ui, "Retract", retract, 0.1..=100.0, " mm");
                         metric_row(ui, "Feed", feed, 1.0..=10_000.0, " mm/min");
@@ -983,24 +1165,39 @@ impl PbcCam {
             });
 
         if apply {
+            let empty_filter = matches!(
+                &editor.kind,
+                TaskEditorKind::Drill { source_tools, .. } if source_tools.is_empty()
+            );
+            if empty_filter {
+                editor.error = Some("Select at least one source tool.".into());
+                self.task_editor = Some(editor);
+                return;
+            }
             let (command, params) = match &editor.kind {
                 TaskEditorKind::Drill {
+                    tool,
+                    source_tools,
                     depth,
                     retract,
                     feed,
                     plunge,
                     dwell,
+                    stepdown,
                     spindle,
                 } => (
                     "task.update_drill",
                     json!({
                         "id": editor.id.value(),
                         "name": editor.name,
+                        "tool": tool.value(),
+                        "source_tools": source_tools.iter().copied().collect::<Vec<_>>(),
                         "depth": depth,
                         "retract": retract,
                         "feed": feed,
                         "plunge": plunge,
                         "dwell": dwell,
+                        "stepdown": stepdown,
                         "spindle": spindle,
                     }),
                 ),
@@ -1017,7 +1214,7 @@ impl PbcCam {
                     json!({
                         "id": editor.id.value(),
                         "name": editor.name,
-                        "tool": tool,
+                        "tool": tool.value(),
                         "side": side.id(),
                         "depth": depth,
                         "retract": retract,
@@ -1038,7 +1235,7 @@ impl PbcCam {
                     json!({
                         "id": editor.id.value(),
                         "name": editor.name,
-                        "tool": tool,
+                        "tool": tool.value(),
                         "depth": depth,
                         "retract": retract,
                         "feed": feed,
@@ -1066,6 +1263,164 @@ impl PbcCam {
             self.task_editor = Some(editor);
         }
     }
+
+    pub(crate) fn add_tool(&mut self) {
+        self.tool_editor = Some(ToolEditor::new());
+    }
+
+    pub(crate) fn open_tool_editor(&mut self) {
+        let Some(Selection::Tool(id)) = self.selection else {
+            self.set_error("Select a machining tool first");
+            return;
+        };
+        let Some(tool) = self.session.tool_library().tool(id) else {
+            return;
+        };
+        self.tool_editor = Some(ToolEditor::from_tool(tool));
+    }
+
+    fn show_tool_editor(&mut self, ctx: &egui::Context) {
+        let Some(mut editor) = self.tool_editor.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+
+        egui::Window::new(if editor.id.is_some() {
+            "Machining tool"
+        } else {
+            "New machining tool"
+        })
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+        .default_width(400.0)
+        .frame(dialog_frame())
+        .show(ctx, |ui| {
+            widgets::section_label(ui, "Tool");
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                ui.add(egui::TextEdit::singleline(&mut editor.name).desired_width(f32::INFINITY));
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Type").size(11.0).color(theme::TEXT_MUTED));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    for kind in [ToolKind::VBit, ToolKind::EndMill, ToolKind::Drill] {
+                        if ui
+                            .add(Button::selectable(editor.kind == kind, kind.label()))
+                            .clicked()
+                        {
+                            editor.kind = kind;
+                        }
+                    }
+                });
+            });
+            metric_row(ui, "Diameter", &mut editor.diameter, 0.05..=25.0, " mm");
+            metric_row(ui, "Feed", &mut editor.feed, 1.0..=10_000.0, " mm/min");
+            metric_row(ui, "Plunge", &mut editor.plunge, 1.0..=5_000.0, " mm/min");
+            spindle_row(ui, &mut editor.spindle);
+
+            if let Some(error) = &editor.error {
+                ui.add_space(8.0);
+                ui.label(RichText::new(error).size(11.0).color(theme::ERROR));
+            }
+
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Save").clicked() {
+                        apply = true;
+                    }
+                });
+            });
+        });
+
+        if apply {
+            let command = if editor.id.is_some() {
+                "tool.update"
+            } else {
+                "tool.create"
+            };
+            let mut params = json!({
+                "name": editor.name,
+                "kind": editor.kind.id(),
+                "diameter": editor.diameter,
+                "feed": editor.feed,
+                "plunge": editor.plunge,
+                "spindle": editor.spindle,
+            });
+            if let Some(id) = editor.id {
+                params["id"] = json!(id.value());
+            }
+            match self.run_command(command, params) {
+                Some(value) => {
+                    if let Some(id) = value.get("id").and_then(Value::as_u64) {
+                        self.selection = Some(Selection::Tool(ToolId::new(id)));
+                    }
+                    self.tool_editor = None;
+                    self.set_status("Machining tool saved");
+                }
+                None => {
+                    editor.error = Some(self.status.clone());
+                    self.tool_editor = Some(editor);
+                }
+            }
+            return;
+        }
+
+        if cancel || !open {
+            self.tool_editor = None;
+        } else {
+            self.tool_editor = Some(editor);
+        }
+    }
+}
+
+fn task_editor_tool_mut(kind: &mut TaskEditorKind) -> &mut ToolId {
+    match kind {
+        TaskEditorKind::Drill { tool, .. }
+        | TaskEditorKind::Cutout { tool, .. }
+        | TaskEditorKind::Engrave { tool, .. } => tool,
+    }
+}
+
+fn tool_combo(ui: &mut egui::Ui, tools: &[Tool], selected: &mut ToolId) {
+    let selected_text = tools.iter().find(|tool| tool.id() == *selected).map_or(
+        "Missing tool".to_owned(),
+        |tool| {
+            format!(
+                "{} · {} · Ø{:.2}",
+                tool.name(),
+                tool.kind().label(),
+                tool.diameter_mm()
+            )
+        },
+    );
+    egui::ComboBox::from_id_salt("task_machining_tool")
+        .selected_text(selected_text)
+        .width(270.0)
+        .show_ui(ui, |ui| {
+            for tool in tools {
+                ui.selectable_value(
+                    selected,
+                    tool.id(),
+                    format!(
+                        "{} · {} · Ø{:.2} mm",
+                        tool.name(),
+                        tool.kind().label(),
+                        tool.diameter_mm()
+                    ),
+                );
+            }
+        });
 }
 
 fn task_editor_kind_name(kind: &TaskEditorKind) -> &'static str {
@@ -1127,6 +1482,12 @@ impl eframe::App for PbcCam {
 
         let ctx = ui.ctx().clone();
         self.show_dialogs(&ctx);
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if let Ok(json) = serde_json::to_string(self.session.tool_library()) {
+            storage.set_string("machining_tool_library", json);
+        }
     }
 }
 

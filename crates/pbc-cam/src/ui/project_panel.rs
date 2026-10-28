@@ -1,4 +1,4 @@
-//! Browser panel: project summary, source layers and the tool table.
+//! Browser panel: project summary, source layers, source tools and machining tools.
 
 use eframe::egui::{
     self, Align, Button, Color32, Frame, Layout, Margin, RichText, Sense, Stroke, Ui, Vec2,
@@ -41,7 +41,12 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     ui.add_space(16.0);
                     widgets::hairline(ui);
                     ui.add_space(10.0);
-                    section_header(ui, "Tools", app.project().tools().len());
+                    source_tools_section(ui, app);
+
+                    ui.add_space(16.0);
+                    widgets::hairline(ui);
+                    ui.add_space(10.0);
+                    section_header(ui, "Machining tools", app.session.tool_library().len());
                     ui.add_space(4.0);
                     tool_list(ui, app);
 
@@ -88,7 +93,11 @@ fn project_card(ui: &mut Ui, app: &PbcCam) {
         ui.horizontal(|ui| {
             stat(ui, "LAYERS", &app.project().layers().len().to_string());
             ui.add_space(20.0);
-            stat(ui, "TOOLS", &app.project().tools().len().to_string());
+            stat(
+                ui,
+                "MACH. TOOLS",
+                &app.session.tool_library().len().to_string(),
+            );
             ui.add_space(20.0);
             stat(ui, "OBJECTS", &app.project().object_count().to_string());
         });
@@ -213,18 +222,79 @@ fn import_buttons(ui: &mut Ui, app: &mut PbcCam) {
     });
 }
 
-fn tool_list(ui: &mut Ui, app: &mut PbcCam) {
-    if app.project().tools().is_empty() {
+fn source_tools_section(ui: &mut Ui, app: &PbcCam) {
+    let layer_id = match app.selection {
+        Some(Selection::Layer(id)) => Some(id),
+        Some(Selection::Task(id)) => app.project().task(id).map(|task| task.source_layer()),
+        _ => None,
+    };
+    let selected = layer_id.and_then(|id| app.project().layer(id));
+    let count = selected.map_or(0, |layer| layer.source_tools().len());
+    section_header(ui, "Source tools", count);
+    ui.add_space(4.0);
+    let Some(layer) = selected else {
         widgets::hint_card(
             ui,
-            "No tools",
-            "Drill tools are created automatically when an Excellon file is imported.",
+            "Select a layer",
+            "Source tools are read-only aperture/drill definitions; they filter objects for tasks.",
+        );
+        return;
+    };
+    if count == 0 {
+        widgets::hint_card(
+            ui,
+            "No source tools",
+            "This layer has no aperture or drill-tool metadata.",
+        );
+        return;
+    }
+    for tool in layer.source_tools() {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(&tool.label)
+                    .size(10.5)
+                    .monospace()
+                    .color(theme::TEXT_MUTED),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(
+                    RichText::new(format!("{} obj", tool.count))
+                        .size(9.5)
+                        .color(theme::TEXT_FAINT),
+                );
+            });
+        });
+    }
+    ui.label(
+        RichText::new("Read-only. Excellon tools filter drilling tasks.")
+            .size(9.0)
+            .color(theme::TEXT_FAINT),
+    );
+}
+
+fn tool_list(ui: &mut Ui, app: &mut PbcCam) {
+    if ui
+        .add_sized(
+            egui::vec2(ui.available_width(), 24.0),
+            Button::new(RichText::new("+ Machining tool").size(10.5)),
+        )
+        .clicked()
+    {
+        app.add_tool();
+    }
+    ui.add_space(4.0);
+
+    if app.session.tool_library().is_empty() {
+        widgets::hint_card(
+            ui,
+            "No machining tools",
+            "Add drills, end mills or V-bits to the user library.",
         );
         return;
     }
 
     let mut selection = None;
-    for tool in app.project().tools() {
+    for tool in app.session.tool_library().tools() {
         let selected = app.selection == Some(Selection::Tool(tool.id()));
         ui.horizontal(|ui| {
             let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(7.0), Sense::hover());
@@ -240,7 +310,7 @@ fn tool_list(ui: &mut Ui, app: &mut PbcCam) {
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
-                    RichText::new(format!("{:.2} mm", tool.diameter_mm()))
+                    RichText::new(format!("Ø {:.2}", tool.diameter_mm()))
                         .size(9.5)
                         .monospace()
                         .color(theme::TEXT_MUTED),

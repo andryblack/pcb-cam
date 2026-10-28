@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use pbc_cam_core::Project;
+use pbc_cam_core::{Project, ToolLibrary};
 use serde_json::Value;
 
 use crate::command::find_command;
@@ -18,6 +18,7 @@ pub struct Session {
     undo: Vec<Arc<Project>>,
     redo: Vec<Arc<Project>>,
     dirty: bool,
+    tool_library: ToolLibrary,
 }
 
 impl Default for Session {
@@ -34,6 +35,7 @@ impl Session {
             undo: Vec::new(),
             redo: Vec::new(),
             dirty: false,
+            tool_library: ToolLibrary::new(),
         }
     }
 
@@ -44,7 +46,24 @@ impl Session {
             undo: Vec::new(),
             redo: Vec::new(),
             dirty: false,
+            tool_library: ToolLibrary::new(),
         }
+    }
+
+    /// User machining tool library, shared by all projects.
+    pub fn tool_library(&self) -> &ToolLibrary {
+        &self.tool_library
+    }
+
+    /// Mutable machining tool library.
+    pub fn tool_library_mut(&mut self) -> &mut ToolLibrary {
+        &mut self.tool_library
+    }
+
+    /// Replace the machining tool library (for persisted settings).
+    pub fn set_tool_library(&mut self, mut library: ToolLibrary) {
+        library.normalize();
+        self.tool_library = library;
     }
 
     /// The current project.
@@ -154,7 +173,7 @@ impl Session {
     /// Mutable project access for command implementations.
     ///
     /// The immutable `Project` clone keeps undo snapshots cheap: only the
-    /// vectors of layers, tools and operations are copied, while imported
+    /// vectors of layers and tasks are copied, while imported
     /// geometry stays shared through `Arc`.
     pub(crate) fn project_mut(&mut self) -> &mut Project {
         Arc::make_mut(&mut self.project)
