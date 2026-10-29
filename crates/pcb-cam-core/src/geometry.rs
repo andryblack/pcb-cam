@@ -5,6 +5,7 @@
 //! on the layer for display.
 
 use std::f64::consts::TAU;
+use std::sync::Arc;
 
 use geo::orient::{Direction, Orient};
 use geo::{
@@ -448,6 +449,29 @@ pub struct GerberLayer {
     pub warnings: Vec<String>,
 }
 
+/// Opaque unioned copper geometry, cheap to share between previews and exports.
+#[derive(Debug, Clone)]
+pub struct CopperGeometry(Arc<GeoMultiPolygon<f64>>);
+
+impl CopperGeometry {
+    /// Filled polygons with holes for canvas rendering.
+    pub fn regions(&self) -> Vec<GerberRegion> {
+        self.0
+            .0
+            .iter()
+            .filter_map(|polygon| {
+                let outer = geo_ring_path(polygon.exterior())?;
+                let holes = polygon
+                    .interiors()
+                    .iter()
+                    .filter_map(geo_ring_path)
+                    .collect();
+                Some(GerberRegion { outer, holes })
+            })
+            .collect()
+    }
+}
+
 impl GerberLayer {
     /// Bounding box of all primitives.
     pub fn bounds(&self) -> Option<Bounds> {
@@ -465,22 +489,14 @@ impl GerberLayer {
     /// Union all dark primitives, subtract clear primitives, and return the
     /// filled polygons that should be drawn for this layer.
     pub fn unioned_regions(&self) -> Vec<GerberRegion> {
-        let Some(geometry) = self.copper_geometry() else {
-            return Vec::new();
-        };
-        geometry
-            .0
-            .iter()
-            .filter_map(|polygon| {
-                let outer = geo_ring_path(polygon.exterior())?;
-                let holes = polygon
-                    .interiors()
-                    .iter()
-                    .filter_map(geo_ring_path)
-                    .collect();
-                Some(GerberRegion { outer, holes })
-            })
-            .collect()
+        self.copper_geometry_snapshot()
+            .map_or_else(Vec::new, |copper| copper.regions())
+    }
+
+    /// Build a shareable snapshot of unioned copper geometry.
+    pub fn copper_geometry_snapshot(&self) -> Option<CopperGeometry> {
+        self.copper_geometry()
+            .map(|geometry| CopperGeometry(Arc::new(geometry)))
     }
 
     /// Closed contours suitable for an edge cut.
@@ -719,13 +735,48 @@ impl GerberLayer {
         {
             return Vec::new();
         }
-        let Some(copper) = self.copper_geometry() else {
+        let Some(copper) = self.copper_geometry_snapshot() else {
             return Vec::new();
         };
+        self.isolation_passes_with_copper(
+            outline_offset_mm,
+            offset_mm,
+            passes,
+            stepover_mm,
+            direction,
+            boundary,
+            &copper,
+        )
+    }
+
+    /// Isolation passes using an already unioned copper snapshot.
+    #[allow(clippy::too_many_arguments)]
+    pub fn isolation_passes_with_copper(
+        &self,
+        outline_offset_mm: f64,
+        offset_mm: f64,
+        passes: u32,
+        stepover_mm: f64,
+        direction: f64,
+        boundary: Option<&Path>,
+        copper: &CopperGeometry,
+    ) -> Vec<Vec<Path>> {
+        let copper = copper.0.as_ref();
+        if !outline_offset_mm.is_finite()
+            || outline_offset_mm < 0.0
+            || !offset_mm.is_finite()
+            || offset_mm < 0.0
+            || !stepover_mm.is_finite()
+            || stepover_mm < 0.0
+            || passes == 0
+        {
+            return Vec::new();
+        }
         let boundary: Option<GeoMultiPolygon<f64>> = boundary
             .and_then(|path| geo_polygon(&path.points, &[]))
             .map(|polygon| GeoMultiPolygon::new(vec![polygon]));
-        let mut all_passes = Vec::new();
+        let mut all_passes = Vec::with_capacity(passes as usize);
+        let batch_size = concurrency();
 
         if let Some(boundary) = &boundary
             && direction > 0.0
@@ -735,71 +786,98 @@ impl GerberLayer {
             // For each pass: outside = work_region - copper.buffer(offset_i).
             // Add all holes of outside. If copper reaches the work boundary,
             // also add the outer contour and inset work_region for the next pass.
-            let mut work_region = if outline_offset_mm > 0.0 {
-                boundary.buffer(-outline_offset_mm)
+            let mut work_inset_mm = outline_offset_mm;
+            let mut work_region = if work_inset_mm > 0.0 {
+                boundary.buffer(-work_inset_mm)
             } else {
                 boundary.clone()
             };
-            for pass in 0..passes {
-                let mut paths = Vec::new();
-                if work_region.0.is_empty() {
-                    all_passes.push(paths);
-                    continue;
+            let mut work_boundaries = boundary_lines(&work_region);
+
+            let mut batch_start = 0usize;
+            'outside_passes: while batch_start < passes as usize {
+                if region_is_empty(&work_region) {
+                    break 'outside_passes;
                 }
-                let distance = offset_mm + f64::from(pass) * stepover_mm;
-                let copper_region = if distance.abs() < 1e-12 {
-                    copper.clone()
-                } else {
-                    copper.buffer(distance)
-                };
-                let outside = work_region.difference(&copper_region);
-                let intersects = boundaries_intersect(&work_region, &copper_region);
-                let outside_polygons = outside.0;
-                for (index, polygon) in outside_polygons.iter().enumerate() {
-                    for interior in polygon.interiors() {
-                        push_geo_ring(&mut paths, interior);
+                let batch_end = (batch_start + batch_size).min(passes as usize);
+                let distances: Vec<f64> = (batch_start..batch_end)
+                    .map(|pass| offset_mm + pass as f64 * stepover_mm)
+                    .collect();
+                let copper_regions = buffer_many(copper, &distances);
+
+                for copper_region in &copper_regions {
+                    let mut paths = Vec::new();
+                    if region_is_empty(&work_region) {
+                        break 'outside_passes;
                     }
-                    let Some(vertex) = polygon.exterior().0.first() else {
-                        continue;
-                    };
-                    let point = GeoPoint::new(vertex.x, vertex.y);
-                    let island = outside_polygons
+                    let outside = work_region.difference(copper_region);
+                    if region_is_empty(&outside) {
+                        // Copper fully covers the work region. Further buffers
+                        // only grow the degenerate difference, so stop.
+                        break 'outside_passes;
+                    }
+                    let copper_boundaries = boundary_lines(copper_region);
+                    let intersects = work_boundaries.intersects(&copper_boundaries);
+                    let holes: Vec<GeoPolygon<f64>> = outside
+                        .0
                         .iter()
-                        .enumerate()
-                        .any(|(other_index, other)| {
-                            other_index != index
-                                && other.interiors().iter().any(|hole| {
-                                    GeoPolygon::new(hole.clone(), vec![]).contains(&point)
-                                })
-                        });
-                    if intersects || island {
-                        push_geo_ring(&mut paths, polygon.exterior());
+                        .flat_map(|polygon| {
+                            polygon
+                                .interiors()
+                                .iter()
+                                .map(|hole| GeoPolygon::new(hole.clone(), Vec::new()))
+                        })
+                        .collect();
+
+                    for polygon in &outside.0 {
+                        for interior in polygon.interiors() {
+                            push_geo_ring(&mut paths, interior);
+                        }
+                        let Some(vertex) = polygon.exterior().0.first() else {
+                            continue;
+                        };
+                        let point = GeoPoint::new(vertex.x, vertex.y);
+                        let island = holes.iter().any(|hole| hole.contains(&point));
+                        if intersects || island {
+                            push_geo_ring(&mut paths, polygon.exterior());
+                        }
                     }
+                    if intersects && stepover_mm > 0.0 {
+                        // Rebuild from the simple source boundary instead of
+                        // repeatedly eroding the already complex work region.
+                        work_inset_mm += stepover_mm;
+                        work_region = boundary.buffer(-work_inset_mm);
+                        work_boundaries = boundary_lines(&work_region);
+                    }
+                    all_passes.push(paths);
                 }
-                if intersects && stepover_mm > 0.0 {
-                    work_region = work_region.buffer(-stepover_mm);
-                }
-                all_passes.push(paths);
+                batch_start = batch_end;
             }
+            all_passes.resize(passes as usize, Vec::new());
             return all_passes;
         }
 
-        for pass in 0..passes {
-            let mut paths = Vec::new();
-            let distance = direction * (offset_mm + f64::from(pass) * stepover_mm);
-            let buffered = if distance.abs() < 1e-12 {
-                copper.clone()
-            } else {
-                copper.buffer(distance)
-            };
-            for polygon in buffered.0 {
-                push_geo_ring(&mut paths, polygon.exterior());
-                for interior in polygon.interiors() {
-                    push_geo_ring(&mut paths, interior);
+        let inside_batch_size = concurrency() * 2;
+        'inside_passes: for batch_start in (0..passes as usize).step_by(inside_batch_size) {
+            let batch_end = (batch_start + inside_batch_size).min(passes as usize);
+            let distances: Vec<f64> = (batch_start..batch_end)
+                .map(|pass| direction * (offset_mm + pass as f64 * stepover_mm))
+                .collect();
+            for buffered in buffer_many(copper, &distances) {
+                if region_is_empty(&buffered) {
+                    break 'inside_passes;
                 }
+                let mut paths = Vec::new();
+                for polygon in buffered.0 {
+                    push_geo_ring(&mut paths, polygon.exterior());
+                    for interior in polygon.interiors() {
+                        push_geo_ring(&mut paths, interior);
+                    }
+                }
+                all_passes.push(paths);
             }
-            all_passes.push(paths);
         }
+        all_passes.resize(passes as usize, Vec::new());
         all_passes
     }
 
@@ -827,16 +905,48 @@ impl GerberLayer {
     }
 }
 
-fn boundaries_intersect(a: &GeoMultiPolygon<f64>, b: &GeoMultiPolygon<f64>) -> bool {
-    let boundary = |geometry: &GeoMultiPolygon<f64>| {
-        let mut lines = Vec::new();
-        for polygon in &geometry.0 {
-            lines.push(polygon.exterior().clone());
-            lines.extend(polygon.interiors().iter().cloned());
+fn concurrency() -> usize {
+    std::thread::available_parallelism().map_or(1, |threads| threads.get().max(1))
+}
+
+fn region_is_empty(geometry: &GeoMultiPolygon<f64>) -> bool {
+    geometry.0.iter().all(|polygon| {
+        polygon.exterior().0.len() < 3 || polygon.interiors().iter().any(|ring| ring.0.len() < 3)
+    })
+}
+
+fn boundary_lines(geometry: &GeoMultiPolygon<f64>) -> GeoMultiLineString<f64> {
+    let mut lines = Vec::new();
+    for polygon in &geometry.0 {
+        lines.push(polygon.exterior().clone());
+        lines.extend(polygon.interiors().iter().cloned());
+    }
+    GeoMultiLineString::new(lines)
+}
+
+fn buffer_many(base: &GeoMultiPolygon<f64>, distances: &[f64]) -> Vec<GeoMultiPolygon<f64>> {
+    let one = |distance: f64| {
+        if distance.abs() < 1e-12 {
+            base.clone()
+        } else {
+            base.buffer(distance)
         }
-        GeoMultiLineString::new(lines)
     };
-    boundary(a).intersects(&boundary(b))
+    let threads = concurrency().min(distances.len()).max(1);
+    if threads <= 1 || distances.len() <= 2 {
+        return distances.iter().copied().map(one).collect();
+    }
+    let chunk = distances.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for slice in distances.chunks(chunk) {
+            handles.push(scope.spawn(move || slice.iter().copied().map(one).collect::<Vec<_>>()));
+        }
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("clearance buffer worker"))
+            .collect()
+    })
 }
 
 fn geo_ring_path(ring: &GeoLineString<f64>) -> Option<Path> {
@@ -1238,6 +1348,34 @@ mod tests {
     }
 
     #[test]
+    fn cached_copper_matches_direct_isolation() {
+        let mut layer = GerberLayer::default();
+        layer.primitives.push(Primitive::Flash {
+            position: Point::new(4.0, 5.0),
+            aperture: Aperture::circle(1.0),
+            rotation_degrees: 0.0,
+            polarity: Polarity::Dark,
+        });
+        let boundary = Path::closed(vec![
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 10.0),
+            Point::new(0.0, 10.0),
+        ]);
+        let direct = layer.isolation_passes(0.1, 0.2, 4, 0.3, 1.0, Some(&boundary));
+        let copper = layer.copper_geometry_snapshot().unwrap();
+        let cached =
+            layer.isolation_passes_with_copper(0.1, 0.2, 4, 0.3, 1.0, Some(&boundary), &copper);
+        assert_eq!(direct.len(), cached.len());
+        for (a, b) in direct.iter().zip(&cached) {
+            assert_eq!(a.len(), b.len());
+            for (a, b) in a.iter().zip(b) {
+                assert_eq!(a.points.len(), b.points.len());
+            }
+        }
+    }
+
+    #[test]
     fn unioned_regions_merge_overlapping_objects() {
         let mut layer = GerberLayer::default();
         for position in [Point::new(0.0, 0.0), Point::new(0.5, 0.0)] {
@@ -1251,6 +1389,26 @@ mod tests {
         let regions = layer.unioned_regions();
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].holes.len(), 0);
+    }
+
+    #[test]
+    fn full_copper_cover_stops_with_empty_passes() {
+        let mut layer = GerberLayer::default();
+        layer.primitives.push(Primitive::Flash {
+            position: Point::new(1.0, 1.0),
+            aperture: Aperture::circle(10.0),
+            rotation_degrees: 0.0,
+            polarity: Polarity::Dark,
+        });
+        let boundary = Path::closed(vec![
+            Point::new(0.0, 0.0),
+            Point::new(2.0, 0.0),
+            Point::new(2.0, 2.0),
+            Point::new(0.0, 2.0),
+        ]);
+        let passes = layer.isolation_passes(0.1, 0.1, 8, 0.2, 1.0, Some(&boundary));
+        assert_eq!(passes.len(), 8);
+        assert!(passes.iter().all(Vec::is_empty));
     }
 
     #[test]

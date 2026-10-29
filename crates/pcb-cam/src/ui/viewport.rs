@@ -828,7 +828,10 @@ fn draw_overlays(painter: &Painter, rect: Rect, app: &PbcCam) {
                 app.project().units(),
             )
         );
-        chip(painter, pos2(x, y), &grid_label);
+        x = chip(painter, pos2(x, y), &grid_label).right() + 8.0;
+    }
+    if app.clearance_computing() {
+        chip(painter, pos2(x, y), "CLEARANCE…");
     }
 
     let jobs = format!(

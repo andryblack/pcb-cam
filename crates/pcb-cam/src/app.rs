@@ -4,13 +4,15 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::time::Duration;
 
 use eframe::egui::{self, Align2, Button, Key, Modifiers, RichText, Stroke, Vec2, vec2};
 use pcb_cam_core::{
-    ContourSide, EngraveSide, GerberRegion, LayerGeometry, LayerId, OperationId, OperationKind,
-    Path as CamPath, Point, Project, SourceFormat, SourceToolInfo, Task, Tool, ToolId, ToolKind,
-    ToolLibrary, Unit, load_project, save_project,
+    ContourSide, CopperGeometry, EngraveOperation, EngraveSide, GerberLayer, GerberRegion,
+    LayerGeometry, LayerId, OperationId, OperationKind, Path as CamPath, Point, Project,
+    SourceFormat, SourceToolInfo, Task, Tool, ToolId, ToolKind, ToolLibrary, Unit, load_project,
+    save_project,
 };
 use pcb_cam_engine::{Session, find_command};
 use serde_json::{Value, json};
@@ -478,6 +480,60 @@ struct ClearancePreview {
     paths: Vec<CamPath>,
 }
 
+#[derive(Debug)]
+struct ClearanceJob {
+    generation: u64,
+    key: ClearanceKey,
+    engrave: EngraveOperation,
+    gerber: GerberLayer,
+    boundary: Option<CamPath>,
+    copper: Option<Arc<CopperGeometry>>,
+}
+
+#[derive(Debug)]
+struct ClearanceWorker {
+    slot: Arc<(Mutex<Option<ClearanceJob>>, Condvar)>,
+    ready: mpsc::Receiver<(u64, ClearanceKey, Vec<CamPath>)>,
+}
+
+impl ClearanceWorker {
+    fn new() -> Self {
+        let slot = Arc::new((Mutex::new(None), Condvar::new()));
+        let worker_slot = Arc::clone(&slot);
+        let (sender, ready) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("clearance-preview".to_owned())
+            .spawn(move || {
+                loop {
+                    let job: ClearanceJob = {
+                        let (lock, wake) = &*worker_slot;
+                        let mut pending = lock.lock().expect("clearance preview lock");
+                        while pending.is_none() {
+                            pending = wake.wait(pending).expect("clearance preview wait");
+                        }
+                        pending.take().expect("clearance preview job")
+                    };
+                    let paths = job.engrave.toolpaths_with_copper(
+                        &job.gerber,
+                        job.boundary.as_ref(),
+                        job.copper.as_deref(),
+                    );
+                    if sender.send((job.generation, job.key, paths)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("spawn clearance preview worker");
+        Self { slot, ready }
+    }
+
+    fn submit(&self, job: ClearanceJob) {
+        let (lock, wake) = &*self.slot;
+        *lock.lock().expect("clearance preview lock") = Some(job);
+        wake.notify_one();
+    }
+}
+
 /// Editable absolute G-code zero point.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OriginDialog {
@@ -519,7 +575,12 @@ pub struct PbcCam {
     pub(crate) task_draft: Option<TaskDraft>,
     pub(crate) tool_editor: Option<ToolEditor>,
     clearance_preview: Option<ClearancePreview>,
+    clearance_requested: Option<ClearanceKey>,
+    clearance_generation: u64,
+    clearance_active_generation: Option<u64>,
+    clearance_worker: ClearanceWorker,
     render_cache: HashMap<LayerId, Arc<Vec<GerberRegion>>>,
+    copper_cache: HashMap<LayerId, Arc<CopperGeometry>>,
     pub(crate) fit_requested: bool,
     pub(crate) origin_pick: bool,
     pub(crate) origin_dialog: Option<OriginDialog>,
@@ -589,7 +650,12 @@ impl PbcCam {
             task_draft: None,
             tool_editor: None,
             clearance_preview: None,
+            clearance_requested: None,
+            clearance_generation: 0,
+            clearance_active_generation: None,
+            clearance_worker: ClearanceWorker::new(),
             render_cache: HashMap::new(),
+            copper_cache: HashMap::new(),
             fit_requested: false,
             origin_pick: false,
             origin_dialog: None,
@@ -655,7 +721,7 @@ impl PbcCam {
             self.origin_dialog = None;
             self.origin_drag = false;
             self.origin_preview = None;
-            self.render_cache.clear();
+            self.invalidate_geometry_caches();
             self.view.reset();
             self.fit_requested = false;
             self.set_status("New project created");
@@ -737,6 +803,7 @@ impl PbcCam {
     pub(crate) fn undo(&mut self) {
         if self.run_command("edit.undo", json!({})).is_some() {
             self.task_draft = None;
+            self.invalidate_geometry_caches();
             self.set_status("Undo");
         }
     }
@@ -744,6 +811,7 @@ impl PbcCam {
     pub(crate) fn redo(&mut self) {
         if self.run_command("edit.redo", json!({})).is_some() {
             self.task_draft = None;
+            self.invalidate_geometry_caches();
             self.set_status("Redo");
         }
     }
@@ -837,7 +905,7 @@ impl PbcCam {
         self.origin_dialog = None;
         self.origin_drag = false;
         self.origin_preview = None;
-        self.render_cache.clear();
+        self.invalidate_geometry_caches();
         self.fit_requested = true;
         self.set_status(format!("Opened {}", path.display()));
         true
@@ -943,7 +1011,7 @@ impl PbcCam {
         if self.project().layers().is_empty() && self.project().tasks().is_empty() {
             let _ = self.run_command("project.new", json!({"name": zip_name}));
             self.project_path = None;
-            self.render_cache.clear();
+            self.invalidate_geometry_caches();
         }
 
         let mut imported = 0usize;
@@ -1459,7 +1527,7 @@ impl PbcCam {
         }
         self.selection = None;
         self.project_path = None;
-        self.render_cache.clear();
+        self.invalidate_geometry_caches();
         self.origin_pick = false;
         self.origin_dialog = None;
         if !self.import_content(SourceFormat::Gerber, top, "Demo Top Copper") {
@@ -1960,31 +2028,55 @@ impl PbcCam {
 
     /// Recompute the selected clearance overlay only when its inputs change,
     /// not on every pan/zoom frame.
-    fn sync_clearance_preview(&mut self) {
+    fn sync_clearance_preview(&mut self, ctx: &egui::Context) {
+        while let Ok((generation, key, paths)) = self.clearance_worker.ready.try_recv() {
+            if self.clearance_active_generation == Some(generation)
+                && self.clearance_requested.as_ref() == Some(&key)
+            {
+                self.clearance_preview = Some(ClearancePreview { key, paths });
+                self.clearance_requested = None;
+                self.clearance_active_generation = None;
+            }
+        }
+
         let Some(Selection::Task(id)) = self.selection else {
             self.clearance_preview = None;
+            self.clearance_requested = None;
+            self.clearance_active_generation = None;
             return;
         };
         let Some(task) = self.project().task(id) else {
             self.clearance_preview = None;
+            self.clearance_requested = None;
+            self.clearance_active_generation = None;
             return;
         };
         let OperationKind::Engrave(engrave) = task.kind() else {
             self.clearance_preview = None;
+            self.clearance_requested = None;
+            self.clearance_active_generation = None;
             return;
         };
         let Some(layer) = self.project().layer(engrave.layer) else {
             self.clearance_preview = None;
+            self.clearance_requested = None;
+            self.clearance_active_generation = None;
             return;
         };
         let LayerGeometry::Gerber(gerber) = layer.geometry() else {
             self.clearance_preview = None;
+            self.clearance_requested = None;
+            self.clearance_active_generation = None;
             return;
         };
         let Some(tool) = self.session.tool_library().tool(engrave.tool) else {
             self.clearance_preview = None;
+            self.clearance_requested = None;
+            self.clearance_active_generation = None;
             return;
         };
+        let engrave = engrave.clone();
+        let gerber = gerber.clone();
         let boundary_path = engrave.boundary_path(self.project());
         let boundary_bits = boundary_path
             .as_ref()
@@ -2015,10 +2107,36 @@ impl PbcCam {
             .as_ref()
             .is_some_and(|preview| preview.key == key)
         {
+            self.clearance_requested = None;
             return;
         }
-        let paths = engrave.toolpaths(gerber, boundary_path.as_ref());
-        self.clearance_preview = Some(ClearancePreview { key, paths });
+        if self.clearance_requested.as_ref() == Some(&key) {
+            ctx.request_repaint_after(Duration::from_millis(30));
+            return;
+        }
+
+        self.clearance_requested = Some(key.clone());
+        self.clearance_generation = self.clearance_generation.wrapping_add(1);
+        let generation = self.clearance_generation;
+        self.clearance_active_generation = Some(generation);
+        let copper = self.copper_cache.get(&key.layer).cloned();
+        self.clearance_worker.submit(ClearanceJob {
+            generation,
+            key,
+            engrave,
+            gerber,
+            boundary: boundary_path,
+            copper,
+        });
+        ctx.request_repaint_after(Duration::from_millis(30));
+    }
+
+    fn invalidate_geometry_caches(&mut self) {
+        self.render_cache.clear();
+        self.copper_cache.clear();
+        self.clearance_preview = None;
+        self.clearance_requested = None;
+        self.clearance_active_generation = None;
     }
 
     /// Union Gerber layers once and cache the filled polygons used by the canvas.
@@ -2032,23 +2150,32 @@ impl PbcCam {
             .map(|layer| layer.id())
             .collect();
         for id in ids {
-            if self.render_cache.contains_key(&id) {
+            if self.render_cache.contains_key(&id) && self.copper_cache.contains_key(&id) {
                 continue;
             }
-            let regions = self
+            let copper = self
                 .project()
                 .layer(id)
                 .and_then(|layer| match layer.geometry() {
-                    LayerGeometry::Gerber(gerber) => Some(gerber.unioned_regions()),
+                    LayerGeometry::Gerber(gerber) => gerber.copper_geometry_snapshot(),
                     LayerGeometry::Excellon(_) => None,
-                })
-                .unwrap_or_default();
+                });
+            let regions = copper
+                .as_ref()
+                .map_or_else(Vec::new, CopperGeometry::regions);
+            if let Some(copper) = copper {
+                self.copper_cache.insert(id, Arc::new(copper));
+            }
             self.render_cache.insert(id, Arc::new(regions));
         }
     }
 
     pub(crate) fn render_regions(&self, id: LayerId) -> Option<&[GerberRegion]> {
         self.render_cache.get(&id).map(|regions| regions.as_slice())
+    }
+
+    pub(crate) fn clearance_computing(&self) -> bool {
+        self.clearance_requested.is_some()
     }
 
     pub(crate) fn clearance_preview_paths(&self, task: OperationId) -> Option<&[CamPath]> {
@@ -2238,7 +2365,8 @@ impl eframe::App for PbcCam {
             ui::inspector::show(ui, self);
         }
 
-        self.sync_clearance_preview();
+        self.sync_render_cache();
+        self.sync_clearance_preview(ui.ctx());
 
         egui::CentralPanel::no_frame().show(ui, |ui| {
             ui::viewport::show(ui, self);

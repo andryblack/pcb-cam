@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::Project;
-use crate::geometry::{ExcellonLayer, GerberLayer, LayerGeometry, Path};
+use crate::geometry::{CopperGeometry, ExcellonLayer, GerberLayer, LayerGeometry, Path};
 use crate::tool::{Tool, ToolKind};
 use crate::{LayerId, Point, ToolId};
 
@@ -581,6 +581,31 @@ impl EngraveOperation {
             self.side.sign(),
             boundary,
         )
+    }
+
+    /// Generate clearance paths using a previously unioned copper snapshot.
+    pub fn toolpaths_with_copper(
+        &self,
+        gerber: &GerberLayer,
+        boundary: Option<&Path>,
+        copper: Option<&CopperGeometry>,
+    ) -> Vec<Path> {
+        let Some(copper) = copper else {
+            return self.toolpaths(gerber, boundary);
+        };
+        gerber
+            .isolation_passes_with_copper(
+                self.outline_offset_mm,
+                self.offset_mm,
+                self.passes,
+                self.stepover_mm,
+                self.side.sign(),
+                boundary,
+                copper,
+            )
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     /// Resolve the clipping boundary: selected layer contour or visible bounds.

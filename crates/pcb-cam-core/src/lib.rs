@@ -18,7 +18,7 @@ pub mod persist;
 mod project;
 mod units;
 
-pub use geometry::GerberRegion;
+pub use geometry::{CopperGeometry, GerberRegion};
 pub use layer::{Layer, LayerId, SourceFormat, SourceToolInfo, suggest_color};
 pub use operation::{
     ClearanceOperation, ClearanceTask, ContourSide, CutoutOperation, CutoutTask, DrillOperation,

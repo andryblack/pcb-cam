@@ -73,6 +73,9 @@ Implemented:
 - Recent-project menu and unsaved-changes confirmation for quit, new and open
 - Settings window (Cmd/Ctrl+,) with appearance, theme (system/dark/light) and canvas object colours
 - Machining defaults for travel feed/safe Z, drilling, milling, clearance and the default clearance tool
+- Clearance previews are computed on a background worker so large pass counts do not block the UI
+- Copper union is cached and shared with canvas rendering; pass buffers are computed in parallel batches and island containment is precomputed
+- Generation stops as soon as copper fully covers the work region, instead of buffering degenerate empty passes
 - GUI-independent core crate and a command-driven engine crate
 - Cross-platform CI builds and a macOS application bundle script
 
