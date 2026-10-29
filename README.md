@@ -6,9 +6,11 @@ PCB-CAM turns Gerber and Excellon fabrication data into CNC control programs. It
 
 ![PCB-CAM with source tools, a machining tool library and a task timeline](docs/screenshot.png)
 
+![G-code preview with a 3D toolpath, syntax-highlighted program and transport timeline](docs/preview.png)
+
 ## Project status
 
-**Milestone 4: source tools, machining tools and filtered tasks — complete.**
+**Milestone 5: G-code preview and machine simulation — complete.**
 
 The project keeps two deliberately separate tool concepts:
 
@@ -20,9 +22,11 @@ The project keeps two deliberately separate tool concepts:
   exactly one machining tool. The library is shared between projects and
   persisted in the application settings.
 
-G-code can be generated for one task or for all enabled tasks in timeline order.
-Tool changes (`T… M6`) are driven by the task machining tools, not by source
-drill diameters.
+G-code is generated for one task or for all enabled tasks in timeline order and
+opened in an interactive preview before anything is written to disk. Tool changes
+(`T… M6`) are driven by the task machining tools, not by source drill diameters.
+The preview replays the emitted program, so it reflects exactly what the export
+will contain.
 
 Implemented:
 
@@ -65,11 +69,19 @@ Implemented:
 - G-code move ordering:
   - drilling and spot drilling visit the nearest remaining hole
   - clearance keeps pass order and orders contours by the nearest entry vertex
-- G-code export:
-  - selected task only
-  - all enabled tasks in timeline order
+- **G-code preview and export**:
+  - generating a program opens the preview screen instead of writing the file directly
+  - preview one selected task or all enabled tasks in timeline order
   - automatic `T… M6` changes between different machining tools
   - XY travel at the configured travel feed; safe-Z clearance from machining defaults
+  - 3D toolpath in the centre with distinct colours for cutting (orange) and rapid/travel (blue), plus the current tool position and holder
+  - orbit, pan, zoom, 3D/top/front presets, fit, grid and adjustable Z exaggeration
+  - left program panel with scope, estimated cycle time, cutting/travel distance, task blocks (click to jump) and a tool list
+  - right G-code panel with syntax highlighting, virtualized scrolling, line numbers and a move-kind gutter
+  - current command highlighted and followed while playing or scrubbing
+  - bottom transport timeline with play/pause, stop, single-command stepping, scrub, task markers and playback speed (0.25×–32×)
+  - estimated time from programmed feeds, dwell, tool changes and spindle starts
+  - export from the preview header or menu; the preview stays open after export
 - Undo/redo for imports, layers and tasks
 - Native file dialogs, drag-and-drop import, Gerber/Excellon ZIP archives and a bundled demo project
 - Versioned `.pcbcam` project files with layers, tasks, G-code origin and a tool-library snapshot
@@ -91,9 +103,10 @@ library contains a 0.3 mm drill and a 1.0 mm end mill:
    `T1` (the 0.3 mm holes).
 2. Create a **hole-milling** task on the same layer, select **End mill 1.00 mm**
    and check the source tools for the 1.0 and 1.5 mm holes.
-3. Export all tasks. The combined program changes from the 0.3 mm drill to the
+3. Preview all tasks. The combined program changes from the 0.3 mm drill to the
    1.0 mm end mill once, plunges the 1.0 mm holes and helically machines the
-   1.5 mm holes.
+   1.5 mm holes. Export it from the preview once the 3D playback and highlighted
+   commands look right.
 
 This separation is the point: the source tool says **which objects belong to a
 task**, while the machining tool says **what cutter performs the work**.
@@ -102,9 +115,9 @@ Next:
 
 - Use Gerber source tools (apertures) to filter cut-out and clearance objects
 - Edge cut tabs and multi-pass depth stepping
-- Project save/load (`.pcbam` or JSON)
-- G-code preview and machine simulation
 - Machine/post-processor profiles and tool wear data
+- Acceleration-aware cycle-time estimates and a machine envelope check
+- Preview overlays for the source Gerber and Excellon layers
 
 ### Known limitations
 
@@ -117,6 +130,7 @@ Next:
 - Slots narrower than the machining tool are rejected; wider slots are routed on the centreline, which may not clear the full slot width.
 - Project files are JSON (`.pcbcam`, version 1). Loading merges missing machining tools into the shared library; conflicting tool definitions are cloned under a new id and task references are remapped. Recent files are stored in the application settings; quit/new/open prompt to save pending changes.
 - G-code is emitted in millimetres with explicit drill/plunge moves. Coordinates are relative to the selected G-code 0-point; machine-specific headers and cutter compensation are not yet supported. XY travel uses `G01` with the configured travel feed rather than controller-defined `G00` rapid.
+- The preview replays the generated subset (`G00`/`G01`/`G02`/`G03`, `G04`, `M3`/`M5`/`M6` and `F`/`S`/`T` words) at programmed feed rates from a safe-Z start. Tool changes and spindle starts use fixed simulated durations; acceleration, look-ahead and controller-specific timing are not modelled yet.
 
 ## Requirements
 
@@ -198,9 +212,11 @@ The script builds a release binary, assembles `PCB-CAM.app` with the app icon an
 8. **File → Save Project** (or **Save Project As…**) stores a `.pcbcam` file;
    **File → Open Project…** restores layers, tasks, the G-code origin and
    referenced machining tools.
-9. Export:
-   - **File → Export Selected Task G-code…** or the inspector's **Export task G-code…** for one task.
-   - **File → Export All Tasks G-code…** or the timeline's **Export all G-code** for the combined program with tool changes.
+9. Preview and export:
+   - **File → Preview Selected Task G-code…** or the inspector's **Preview task G-code…** for one task.
+   - **File → Preview All Tasks G-code…** or the timeline's **Preview all G-code** for the combined program with tool changes.
+   - The preview shows the 3D toolpath, program tasks and tools, the highlighted G-code and a scrub timeline. Use **Space** to play/pause, **←/→** to step commands, **Shift+←/→** to step ten, **Home/End** for the start/end and the speed selector for playback rate.
+   - Export with **Export G-code…** in the preview header (or `Cmd/Ctrl+E`). **Esc** returns to the workspace.
 
 The demo project contains top copper, a rounded board outline with arcs, a
 silkscreen legend and a drill file. It is set up as four tasks: a drilling task for the 0.8 mm holes, a hole-milling
@@ -222,15 +238,17 @@ cargo test --workspace --locked
 │   ├── pcb-cam/            # Desktop application (eframe/egui)
 │   │   └── src/
 │   │       ├── app.rs      # Application state, commands, editors
+│   │       ├── preview.rs  # Preview playback clock, 3D camera, preview state
 │   │       ├── theme.rs    # PCB-CAM palette and egui style
 │   │       ├── view.rs     # Canvas camera and unit formatting
-│   │       └── ui/         # Menu, toolbar, browser, timeline, viewport
+│   │       └── ui/         # Menu, panels, 3D preview, G-code panel, timeline
 │   ├── pcb-cam-engine/     # Session, command registry, undo/redo
 │   └── pcb-cam-core/       # GUI-independent domain and import
 │       └── src/
 │           ├── formats/    # Gerber and Excellon importers
 │           ├── geometry.rs # Points, paths, apertures, offset contours
 │           ├── gcode.rs    # Task and combined G-code post-processor
+│           ├── preview.rs  # Timed G-code parser for playback and highlighting
 │           ├── layer.rs    # Source layers, colours, source-tool metadata
 │           ├── operation.rs # Task timeline (Task aliases)
 │           ├── project.rs  # Project and tasks
@@ -255,7 +273,8 @@ pcb-cam-core  ←  pcb-cam-engine  ←  pcb-cam
 ```
 
 - **core** owns the project model, source geometry, source-tool metadata, the
-  machining tool library type, contour offsets and G-code generation. It has no GUI dependencies.
+  machining tool library type, contour offsets, G-code generation and the timed
+  preview parser. It has no GUI dependencies.
 - **engine** owns a `Session`, executes JSON commands such as `file.import_gerber`,
   `task.add_cutout`, `tool.create`, `file.export_task_gcode` and `edit.undo`, and
   keeps project undo/redo snapshots. The machining library belongs to the session
@@ -273,17 +292,31 @@ pcb-cam-core  ←  pcb-cam-engine  ←  pcb-cam
 | `Cmd/Ctrl+S` | Save project |
 | `Cmd/Ctrl+Shift+S` | Save project as |
 | `Cmd/Ctrl+Shift+O` | Import Gerber/Excellon/ZIP |
-| `Cmd/Ctrl+E` | Export selected task G-code |
-| `Cmd/Ctrl+Shift+E` | Export all tasks G-code |
+| `Cmd/Ctrl+E` | Preview selected task G-code (export it from the preview) |
+| `Cmd/Ctrl+Shift+E` | Preview all tasks G-code |
 | `Cmd/Ctrl+Z` | Undo |
 | `Cmd/Ctrl+Shift+Z` | Redo |
 | `Delete` | Remove selected layer, tool or task |
 | `F` or double-click | Fit project into the canvas |
 | `G` | Toggle grid |
 | `F1` | About |
-| `Esc` | Close dialog |
+| `Esc` | Close dialog / return from the G-code preview |
 
-Scroll to zoom around the pointer; drag to pan.
+### G-code preview
+
+| Shortcut | Action |
+| --- | --- |
+| `Space` | Play or pause playback |
+| `←` / `→` | Step one command; hold `Shift` to step ten |
+| `Home` / `End` | Jump to the start or end of the program |
+| `+` / `-` | Increase or decrease playback speed |
+| `F` | Fit the toolpath into the 3D view |
+| `Cmd/Ctrl+E` | Export the previewed program |
+| `Cmd/Ctrl+R` | Regenerate the preview |
+| `Esc` | Return to the workspace |
+
+Scroll to zoom around the pointer; drag to orbit the 3D view; `Shift`+drag to pan.
+Double-click the 3D view to fit the toolpath.
 
 ## Icons
 

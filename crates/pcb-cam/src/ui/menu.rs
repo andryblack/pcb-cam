@@ -18,6 +18,10 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         .show_separator_line(false)
         .show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
+                if app.preview.is_some() {
+                    preview_menus(ui, app);
+                    return;
+                }
                 ui.menu_button("File", |ui| {
                     if ui
                         .add(Button::new("New Project").shortcut_text(app::SHORTCUT_NEW))
@@ -94,11 +98,11 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     let selected_task = matches!(app.selection, Some(Selection::Task(_)));
                     let export_task = ui.add_enabled(
                         selected_task,
-                        Button::new("Export Selected Task G-code…").shortcut_text("Cmd/Ctrl+E"),
+                        Button::new("Preview Selected Task G-code…").shortcut_text("Cmd/Ctrl+E"),
                     );
                     if export_task.clicked() {
                         ui.close();
-                        app.export_task_gcode_dialog();
+                        app.open_task_gcode_preview();
                     }
                     if !selected_task {
                         export_task.on_disabled_hover_text("Select a task first");
@@ -107,11 +111,11 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     let all_tasks = app.project().enabled_task_count() > 0;
                     let export_all = ui.add_enabled(
                         all_tasks,
-                        Button::new("Export All Tasks G-code…").shortcut_text("Cmd/Ctrl+Shift+E"),
+                        Button::new("Preview All Tasks G-code…").shortcut_text("Cmd/Ctrl+Shift+E"),
                     );
                     if export_all.clicked() {
                         ui.close();
-                        app.export_all_gcode_dialog();
+                        app.open_all_gcode_preview();
                     }
                     if !all_tasks {
                         export_all.on_disabled_hover_text("Add and enable a task first");
@@ -216,18 +220,18 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     let selected_task = matches!(app.selection, Some(Selection::Task(_)));
                     ui.separator();
                     let export_task =
-                        ui.add_enabled(selected_task, Button::new("Export Selected Task G-code…"));
+                        ui.add_enabled(selected_task, Button::new("Preview Selected Task G-code…"));
                     if export_task.clicked() {
                         ui.close();
-                        app.export_task_gcode_dialog();
+                        app.open_task_gcode_preview();
                     }
                     let export_all = ui.add_enabled(
                         app.project().enabled_task_count() > 0,
-                        Button::new("Export All Tasks G-code…"),
+                        Button::new("Preview All Tasks G-code…"),
                     );
                     if export_all.clicked() {
                         ui.close();
-                        app.export_all_gcode_dialog();
+                        app.open_all_gcode_preview();
                     }
                 });
 
@@ -266,11 +270,100 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(
-                        RichText::new(format!("v{}  /  Milestone 4", app::VERSION))
+                        RichText::new(format!("v{}  /  Milestone 5", app::VERSION))
                             .size(10.0)
                             .color(theme::text_faint()),
                     );
                 });
             });
         });
+}
+
+fn preview_menus(ui: &mut egui::Ui, app: &mut PbcCam) {
+    ui.menu_button("File", |ui| {
+        let export = ui.add(Button::new("Export G-code…").shortcut_text("Cmd/Ctrl+E"));
+        if export.clicked() {
+            app.export_preview_gcode();
+            ui.close();
+        }
+        if ui
+            .add(Button::new("Regenerate Preview").shortcut_text("Cmd/Ctrl+R"))
+            .clicked()
+        {
+            app.regenerate_preview();
+            ui.close();
+        }
+        if ui
+            .add(Button::new("Close Preview").shortcut_text("Esc"))
+            .clicked()
+        {
+            app.close_preview();
+            ui.close();
+        }
+        ui.separator();
+        if ui
+            .add(Button::new("Quit").shortcut_text(app::SHORTCUT_QUIT))
+            .clicked()
+        {
+            app.request_quit(ui.ctx());
+        }
+    });
+
+    ui.menu_button("View", |ui| {
+        if ui.add(Button::new("Fit view").shortcut_text("F")).clicked() {
+            if let Some(preview) = &mut app.preview {
+                preview.fit_pending = true;
+            }
+            ui.close();
+        }
+        ui.separator();
+        for preset in [
+            crate::preview::CameraPreset::Iso,
+            crate::preview::CameraPreset::Top,
+            crate::preview::CameraPreset::Front,
+        ] {
+            if ui.button(format!("{} view", preset.label())).clicked() {
+                if let Some(preview) = &mut app.preview {
+                    preview.camera.set_preset(preset);
+                    preview.fit_pending = true;
+                }
+                ui.close();
+            }
+        }
+        ui.separator();
+        if let Some(preview) = &mut app.preview {
+            ui.checkbox(&mut preview.show_cut, "Cutting moves");
+            ui.checkbox(&mut preview.show_rapid, "Rapid & travel");
+            ui.checkbox(&mut preview.follow, "Follow current command");
+            ui.menu_button("Z exaggeration", |ui| {
+                for value in [1.0_f32, 2.0, 4.0, 8.0, 16.0] {
+                    let selected = (preview.z_scale - value).abs() < f32::EPSILON;
+                    if ui.radio(selected, format!("×{value:.0}")).clicked() {
+                        preview.z_scale = value;
+                        preview.fit_pending = true;
+                        ui.close();
+                    }
+                }
+            });
+        }
+    });
+
+    ui.menu_button("Help", |ui| {
+        if ui.button("Keyboard shortcuts").clicked() {
+            app.shortcuts_open = true;
+            ui.close();
+        }
+        if ui.button("About PCB-CAM").clicked() {
+            app.about_open = true;
+            ui.close();
+        }
+    });
+
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        ui.label(
+            RichText::new("G-CODE PREVIEW")
+                .size(10.0)
+                .color(theme::copper()),
+        );
+    });
 }

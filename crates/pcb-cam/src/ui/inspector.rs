@@ -92,7 +92,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         }
         Some(InspectorAction::Remove) => app.remove_selection(),
         Some(InspectorAction::Fit) => app.fit_view(),
-        Some(InspectorAction::ExportTask) => app.export_task_gcode_dialog(),
+        Some(InspectorAction::ExportTask) => app.open_task_gcode_preview(),
         Some(InspectorAction::EditTool) => app.open_tool_editor(),
         Some(InspectorAction::CreateTool(source)) => app.add_tool_from_source(&source),
         Some(InspectorAction::SetUnits(units)) => app.set_units(units),
@@ -758,7 +758,7 @@ fn task_details(
     ui.add_space(10.0);
     let export = ui.add_enabled(
         enabled,
-        Button::new(RichText::new("Export task G-code…").size(11.0)),
+        Button::new(RichText::new("Preview task G-code…").size(11.0)),
     );
     if export.clicked() {
         *action = Some(InspectorAction::ExportTask);

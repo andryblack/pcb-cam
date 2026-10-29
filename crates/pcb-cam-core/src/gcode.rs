@@ -31,6 +31,40 @@ pub struct GcodeProgram {
     pub helical_hole_count: usize,
     /// Total cutting length in millimetres (approximate for arcs).
     pub cut_length_mm: f64,
+    /// Task blocks in emission order.
+    pub tasks: Vec<GcodeProgramTask>,
+    /// Tools in program order.
+    pub tools: Vec<GcodeProgramTool>,
+}
+
+/// One task block inside a generated program.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GcodeProgramTask {
+    /// Task display name.
+    pub name: String,
+    /// Task type label, for example `Drill` or `Clearance`.
+    pub kind: String,
+    /// First line of the block (zero based).
+    pub line_start: usize,
+    /// Line after the block (zero based, exclusive).
+    pub line_end: usize,
+    /// Program tool number used by the task, if it was selected.
+    pub tool_number: Option<usize>,
+    /// Name of the task machining tool.
+    pub tool_name: Option<String>,
+}
+
+/// One machining tool referenced by a generated program.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GcodeProgramTool {
+    /// Program tool number (`T1` is 1).
+    pub number: usize,
+    /// Tool display name.
+    pub name: String,
+    /// Tool diameter in millimetres.
+    pub diameter_mm: f64,
+    /// Tool type label.
+    pub kind: String,
 }
 
 /// Generate a program for one task.
@@ -94,6 +128,8 @@ struct ProgramBuilder<'a> {
     library: &'a ToolLibrary,
     text: String,
     tools: Vec<ToolId>,
+    tool_entries: Vec<GcodeProgramTool>,
+    task_entries: Vec<GcodeProgramTask>,
     current_tool: Option<ToolId>,
     current_spindle: Option<u32>,
     last_safe_z: f64,
@@ -138,6 +174,8 @@ impl<'a> ProgramBuilder<'a> {
             library,
             text,
             tools: Vec::new(),
+            tool_entries: Vec::new(),
+            task_entries: Vec::new(),
             current_tool: None,
             current_spindle: None,
             last_safe_z: machining.safe_z_mm,
@@ -180,6 +218,7 @@ impl<'a> ProgramBuilder<'a> {
             return Err(format!("task `{}` is disabled", task.name()));
         }
         let _ = writeln!(self.text);
+        let line_start = self.text.lines().count();
         let _ = writeln!(self.text, "({} - {})", task.kind_label(), task.name());
         match task.kind() {
             OperationKind::Drill(drill) => self.append_drill(task, drill)?,
@@ -189,7 +228,25 @@ impl<'a> ProgramBuilder<'a> {
             OperationKind::Engrave(engrave) => self.append_engrave(task, engrave)?,
         }
         self.task_count += 1;
+        self.task_entries.push(GcodeProgramTask {
+            name: task.name().to_owned(),
+            kind: task.kind_label().to_owned(),
+            line_start,
+            line_end: self.text.lines().count(),
+            tool_number: self.tool_number(task.tool()),
+            tool_name: self
+                .library
+                .tool(task.tool())
+                .map(|tool| tool.name().to_owned()),
+        });
         Ok(())
+    }
+
+    fn tool_number(&self, id: ToolId) -> Option<usize> {
+        self.tools
+            .iter()
+            .position(|candidate| *candidate == id)
+            .map(|index| index + 1)
     }
 
     fn append_drill(
@@ -603,14 +660,20 @@ impl<'a> ProgramBuilder<'a> {
                 let _ = writeln!(self.text, "G00 Z{safe_z:.3}");
                 let _ = writeln!(self.text, "M5");
             }
-            let index = self
-                .tools
-                .iter()
-                .position(|id| *id == tool.id())
-                .unwrap_or_else(|| {
+            let index = match self.tools.iter().position(|id| *id == tool.id()) {
+                Some(index) => index,
+                None => {
                     self.tools.push(tool.id());
-                    self.tools.len() - 1
-                });
+                    let index = self.tools.len() - 1;
+                    self.tool_entries.push(GcodeProgramTool {
+                        number: index + 1,
+                        name: tool.name().to_owned(),
+                        diameter_mm: tool.diameter_mm(),
+                        kind: tool.kind().label().to_owned(),
+                    });
+                    index
+                }
+            };
             let number = index + 1;
             let _ = writeln!(
                 self.text,
@@ -713,6 +776,8 @@ impl<'a> ProgramBuilder<'a> {
             path_count: self.path_count,
             helical_hole_count: self.helical_hole_count,
             cut_length_mm: self.cut_length_mm,
+            tasks: self.task_entries,
+            tools: self.tool_entries,
         }
     }
 }
@@ -1245,6 +1310,27 @@ mod tests {
         assert_eq!(program.task_count, 2);
         assert_eq!(program.tool_count, 2);
         assert_eq!(program.text.matches("M6").count(), 2);
+
+        assert_eq!(program.tasks.len(), 2);
+        assert_eq!(program.tasks[0].name, "Drill");
+        assert_eq!(program.tasks[0].kind, "Drill");
+        assert_eq!(program.tasks[0].tool_number, Some(1));
+        assert_eq!(program.tasks[1].kind, "Edge cut");
+        assert_eq!(program.tasks[1].tool_number, Some(2));
+        assert!(program.tasks[0].line_start < program.tasks[0].line_end);
+        assert!(program.tasks[1].line_end <= program.text.lines().count());
+        assert!(
+            program
+                .text
+                .lines()
+                .skip(program.tasks[0].line_start)
+                .take(2)
+                .any(|line| line.contains("Drill"))
+        );
+        assert_eq!(program.tools.len(), 2);
+        assert_eq!(program.tools[0].number, 1);
+        assert_eq!(program.tools[1].number, 2);
+        assert!(program.tools.iter().all(|tool| !tool.name.is_empty()));
     }
 
     #[test]

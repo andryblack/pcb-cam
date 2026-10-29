@@ -367,10 +367,10 @@ fn output_section(ui: &mut Ui, app: &mut PbcCam) {
             ui.add_space(6.0);
             let export = ui.add_sized(
                 egui::vec2(ui.available_width(), 25.0),
-                Button::new(RichText::new("Export all G-code…").size(11.0)),
+                Button::new(RichText::new("Preview all G-code…").size(11.0)),
             );
             if export.clicked() {
-                app.export_all_gcode_dialog();
+                app.open_all_gcode_preview();
             }
         }
     });

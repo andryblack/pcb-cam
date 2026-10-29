@@ -40,8 +40,29 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         }),
                 );
                 ui.separator();
-                ui.label(
-                    RichText::new(format!(
+                let meta = if let Some(preview) = &app.preview {
+                    let origin = preview
+                        .preview
+                        .as_ref()
+                        .map(|data| {
+                            format!(" · origin X{:.3} Y{:.3}", data.origin.x, data.origin.y)
+                        })
+                        .unwrap_or_default();
+                    format!(
+                        "{} lines · {} tasks{origin} · {}",
+                        preview.line_count(),
+                        preview
+                            .program
+                            .as_ref()
+                            .map_or(0, |program| program.task_count),
+                        if preview.is_ready() {
+                            "preview"
+                        } else {
+                            "preview error"
+                        }
+                    )
+                } else {
+                    format!(
                         "{} · {} objects{}",
                         layer_count(app.project().layers().len()),
                         app.project().object_count(),
@@ -50,32 +71,96 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         } else {
                             ""
                         }
-                    ))
-                    .size(10.0)
-                    .color(theme::text_faint()),
-                );
+                    )
+                };
+                ui.label(RichText::new(meta).size(10.0).color(theme::text_faint()));
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(
-                        RichText::new(format!("Zoom {:.0}%", app.view.zoom_percent()))
+                    if let Some(preview) = &app.preview {
+                        ui.label(
+                            RichText::new(preview.time_label())
+                                .size(10.0)
+                                .monospace()
+                                .color(theme::copper()),
+                        );
+                        ui.separator();
+                        ui.label(
+                            RichText::new(if preview.playing {
+                                "PLAYING"
+                            } else if preview.is_ready() {
+                                "PAUSED"
+                            } else {
+                                "NO PROGRAM"
+                            })
                             .size(10.0)
                             .monospace()
-                            .color(theme::text_muted()),
-                    );
-                    ui.separator();
-                    ui.label(
-                        RichText::new(app.project().units().symbol().to_ascii_uppercase())
-                            .size(10.0)
-                            .monospace()
-                            .color(theme::copper()),
-                    );
-                    ui.separator();
-                    ui.label(
-                        RichText::new(cursor_position(app))
-                            .size(10.0)
-                            .monospace()
-                            .color(theme::text_muted()),
-                    );
+                            .color(if preview.playing {
+                                theme::accent()
+                            } else {
+                                theme::text_muted()
+                            }),
+                        );
+                        ui.separator();
+                        if let Some(state) = preview.state() {
+                            ui.label(
+                                RichText::new(format!(
+                                    "X {:+.3}  Y {:+.3}  Z {:+.3}",
+                                    state.position.x, state.position.y, state.position.z
+                                ))
+                                .size(10.0)
+                                .monospace()
+                                .color(theme::text_muted()),
+                            );
+                            ui.separator();
+                            ui.label(
+                                RichText::new(preview.state_tool_label())
+                                    .size(10.0)
+                                    .color(theme::text_muted()),
+                            );
+                            ui.separator();
+                        }
+                        ui.label(
+                            RichText::new(format!("{:.2}×", preview.speed))
+                                .size(10.0)
+                                .monospace()
+                                .color(theme::text_muted()),
+                        );
+                        ui.separator();
+                        ui.label(
+                            RichText::new(format!("Z ×{:.0}", preview.z_scale))
+                                .size(10.0)
+                                .monospace()
+                                .color(theme::text_muted()),
+                        );
+                        ui.separator();
+                        ui.label(
+                            RichText::new("MM")
+                                .size(10.0)
+                                .monospace()
+                                .color(theme::copper()),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new(format!("Zoom {:.0}%", app.view.zoom_percent()))
+                                .size(10.0)
+                                .monospace()
+                                .color(theme::text_muted()),
+                        );
+                        ui.separator();
+                        ui.label(
+                            RichText::new(app.project().units().symbol().to_ascii_uppercase())
+                                .size(10.0)
+                                .monospace()
+                                .color(theme::copper()),
+                        );
+                        ui.separator();
+                        ui.label(
+                            RichText::new(cursor_position(app))
+                                .size(10.0)
+                                .monospace()
+                                .color(theme::text_muted()),
+                        );
+                    }
                 });
             });
         });

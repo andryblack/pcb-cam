@@ -11,6 +11,7 @@ pub mod formats;
 pub mod gcode;
 pub mod geometry;
 pub mod operation;
+pub mod preview;
 pub mod tool;
 
 mod layer;
@@ -33,8 +34,8 @@ pub use units::Unit;
 
 pub use formats::{ParseError, parse_excellon, parse_gerber};
 pub use gcode::{
-    GcodeProgram, generate_all_gcode, generate_drill_gcode, generate_task_gcode,
-    generate_tasks_gcode,
+    GcodeProgram, GcodeProgramTask, GcodeProgramTool, generate_all_gcode, generate_drill_gcode,
+    generate_task_gcode, generate_tasks_gcode,
 };
 pub use geometry::{
     Aperture, ApertureHole, ApertureShape, Bounds, DrillHit, DrillSlot, DrillTool, ExcellonLayer,

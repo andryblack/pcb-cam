@@ -11,12 +11,13 @@ use eframe::egui::{self, Align2, Button, Key, Modifiers, RichText, Stroke, Vec2,
 use pcb_cam_core::{
     ContourSide, CopperGeometry, EngraveOperation, EngraveSide, GerberLayer, GerberRegion,
     LayerGeometry, LayerId, OperationId, OperationKind, Path as CamPath, Point, Project,
-    SourceFormat, SourceToolInfo, Task, Tool, ToolId, ToolKind, ToolLibrary, Unit, load_project,
-    save_project,
+    SourceFormat, SourceToolInfo, Task, Tool, ToolId, ToolKind, ToolLibrary, Unit,
+    generate_all_gcode, generate_task_gcode, load_project, save_project,
 };
 use pcb_cam_engine::{Session, find_command};
 use serde_json::{Value, json};
 
+use crate::preview::{PreviewMode, PreviewSession};
 use crate::theme;
 use crate::ui;
 use crate::ui::widgets;
@@ -591,6 +592,8 @@ pub struct PbcCam {
     allow_close: bool,
     pub(crate) recent_projects: Vec<PathBuf>,
     window_title: String,
+    /// G-code preview screen, when open.
+    pub(crate) preview: Option<PreviewSession>,
 }
 
 impl PbcCam {
@@ -666,6 +669,7 @@ impl PbcCam {
             allow_close: false,
             recent_projects,
             window_title: WINDOW_TITLE.to_owned(),
+            preview: None,
         }
     }
 
@@ -1429,35 +1433,155 @@ impl PbcCam {
             })
     }
 
-    pub(crate) fn export_task_gcode_dialog(&mut self) {
+    /// Generate the selected task and enter the G-code preview.
+    pub(crate) fn open_task_gcode_preview(&mut self) {
         let Some(Selection::Task(id)) = self.selection else {
-            self.set_error("Select a task to export");
+            self.set_error("Select a task to preview");
             return;
         };
+        self.open_task_preview_for(id);
+    }
+
+    fn open_task_preview_for(&mut self, id: OperationId) {
+        let mode = PreviewMode::Task(id);
         let Some(task) = self.project().task(id) else {
+            self.preview = Some(PreviewSession::with_error(mode, "Task no longer exists."));
+            self.set_error("Task no longer exists");
             return;
         };
-        let Some(path) = self.choose_gcode_path(&format!("-{}", task.kind_label())) else {
-            return;
+        let name = task.name().to_owned();
+        let result = if !task.enabled() {
+            Err(format!("Task `{name}` is disabled."))
+        } else {
+            let warnings = self.task_warnings(id);
+            if warnings.is_empty() {
+                generate_task_gcode(self.project(), self.session.tool_library(), task)
+                    .map_err(|error| format!("{name}: {error}"))
+            } else {
+                Err(format!("{name}: {}", warnings.join(" ")))
+            }
         };
-        if let Some(value) = self.run_command(
-            "file.export_task_gcode",
-            json!({"path": path, "task": id.value()}),
-        ) {
-            self.report_export(&value, "Task");
+        match result {
+            Ok(program) => {
+                self.preview = Some(PreviewSession::new(mode, program));
+                self.set_status(format!("G-code preview · {name}"));
+            }
+            Err(message) => {
+                self.preview = Some(PreviewSession::with_error(mode, message.clone()));
+                self.set_error(message);
+            }
         }
     }
 
-    pub(crate) fn export_all_gcode_dialog(&mut self) {
+    /// Generate all enabled tasks and enter the G-code preview.
+    pub(crate) fn open_all_gcode_preview(&mut self) {
+        let mode = PreviewMode::All;
         if self.project().enabled_task_count() == 0 {
-            self.set_error("Add and enable a task first");
+            let message = "Add and enable a task first";
+            self.preview = Some(PreviewSession::with_error(mode, message));
+            self.set_error(message);
             return;
         }
-        let Some(path) = self.choose_gcode_path("-all") else {
+        let blocked: Vec<String> = self
+            .project()
+            .tasks()
+            .iter()
+            .filter(|task| task.enabled())
+            .filter_map(|task| {
+                let warnings = self.task_warnings(task.id());
+                (!warnings.is_empty()).then(|| format!("{}: {}", task.name(), warnings.join(" ")))
+            })
+            .collect();
+        let result = if blocked.is_empty() {
+            generate_all_gcode(self.project(), self.session.tool_library())
+                .map_err(|error| format!("G-code generation failed: {error}"))
+        } else {
+            Err(blocked.join("\n"))
+        };
+        match result {
+            Ok(program) => {
+                let tasks = program.task_count;
+                self.preview = Some(PreviewSession::new(mode, program));
+                self.set_status(format!("G-code preview · {tasks} enabled tasks"));
+            }
+            Err(message) => {
+                self.preview = Some(PreviewSession::with_error(mode, message.clone()));
+                self.set_error(message);
+            }
+        }
+    }
+
+    /// Close the preview and return to the workspace.
+    pub(crate) fn close_preview(&mut self) {
+        if self.preview.take().is_some() {
+            self.set_status("Closed G-code preview");
+        }
+    }
+
+    /// Regenerate the preview after returning from an edit.
+    pub(crate) fn regenerate_preview(&mut self) {
+        let Some(mode) = self.preview.as_ref().map(|preview| preview.mode) else {
             return;
         };
-        if let Some(value) = self.run_command("file.export_gcode", json!({"path": path})) {
-            self.report_export(&value, "Combined");
+        match mode {
+            PreviewMode::Task(id) => self.open_task_preview_for(id),
+            PreviewMode::All => self.open_all_gcode_preview(),
+        }
+    }
+
+    /// Export the program currently shown in the preview.
+    pub(crate) fn export_preview_gcode(&mut self) {
+        let Some(mode) = self.preview.as_ref().map(|preview| preview.mode) else {
+            return;
+        };
+        if !self.preview.as_ref().is_some_and(PreviewSession::is_ready) {
+            let message = "Preview is not ready to export";
+            self.set_error(message);
+            if let Some(preview) = &mut self.preview {
+                preview.set_notice(message, true);
+            }
+            return;
+        }
+        let suffix = match mode {
+            PreviewMode::Task(id) => self.project().task(id).map_or_else(
+                || "-task".to_owned(),
+                |task| format!("-{}", task.kind_label()),
+            ),
+            PreviewMode::All => "-all".to_owned(),
+        };
+        let Some(path) = self.choose_gcode_path(&suffix) else {
+            return;
+        };
+        let value = match mode {
+            PreviewMode::Task(id) => self.run_command(
+                "file.export_task_gcode",
+                json!({"path": path, "task": id.value()}),
+            ),
+            PreviewMode::All => self.run_command("file.export_gcode", json!({"path": path})),
+        };
+        if let Some(value) = value {
+            self.report_export(&value, if mode.is_all() { "Combined" } else { "Task" });
+            let message = format!("Exported {}", path.display());
+            if let Some(preview) = &mut self.preview {
+                preview.exported_path = Some(path);
+                preview.set_notice(message, false);
+            }
+        } else {
+            let message = self.status.clone();
+            if let Some(preview) = &mut self.preview {
+                preview.set_notice(message, true);
+            }
+        }
+    }
+
+    fn tick_preview(&mut self, ctx: &egui::Context) {
+        let Some(preview) = &mut self.preview else {
+            return;
+        };
+        if preview.playing {
+            let dt = ctx.input(|input| input.stable_dt).min(0.1);
+            preview.advance(f64::from(dt));
+            ctx.request_repaint();
         }
     }
 
@@ -1765,7 +1889,12 @@ impl PbcCam {
 
     fn sync_window_title(&mut self, ctx: &egui::Context) {
         let dirty = if self.session.dirty() { " *" } else { "" };
-        let title = format!("{APP_NAME} — {}{dirty}", self.project().name());
+        let preview = if self.preview.is_some() {
+            " — G-code preview"
+        } else {
+            ""
+        };
+        let title = format!("{APP_NAME} — {}{dirty}{preview}", self.project().name());
         if title != self.window_title {
             self.window_title.clone_from(&title);
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
@@ -1787,16 +1916,22 @@ impl PbcCam {
         }
 
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-            self.about_open = false;
-            self.shortcuts_open = false;
-            self.task_draft = None;
-            self.pending_action = None;
-            self.origin_dialog = None;
-            self.origin_preview = None;
-            self.origin_drag = false;
-            if self.origin_pick {
-                self.origin_pick = false;
-                self.set_status("G-code 0-point pick cancelled");
+            if self.about_open || self.shortcuts_open {
+                self.about_open = false;
+                self.shortcuts_open = false;
+            } else if self.preview.is_some() && self.pending_action.is_none() {
+                self.close_preview();
+                return;
+            } else {
+                self.task_draft = None;
+                self.pending_action = None;
+                self.origin_dialog = None;
+                self.origin_preview = None;
+                self.origin_drag = false;
+                if self.origin_pick {
+                    self.origin_pick = false;
+                    self.set_status("G-code 0-point pick cancelled");
+                }
             }
         }
 
@@ -1806,6 +1941,11 @@ impl PbcCam {
         }
 
         if self.about_open || self.shortcuts_open {
+            return;
+        }
+
+        if self.preview.is_some() {
+            self.handle_preview_shortcuts(ctx);
             return;
         }
 
@@ -1836,10 +1976,10 @@ impl PbcCam {
             self.undo();
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::E)) {
-            self.export_all_gcode_dialog();
+            self.open_all_gcode_preview();
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::E)) {
-            self.export_task_gcode_dialog();
+            self.open_task_gcode_preview();
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F)) {
             self.fit_view();
@@ -1851,6 +1991,57 @@ impl PbcCam {
             || ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace))
         {
             self.remove_selection();
+        }
+    }
+
+    fn handle_preview_shortcuts(&mut self, ctx: &egui::Context) {
+        let mut export = false;
+        let mut regenerate = false;
+        if let Some(preview) = &mut self.preview {
+            if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Space)) {
+                preview.toggle_play();
+            }
+            if ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::ArrowLeft)) {
+                preview.step_lines(-10);
+            } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowLeft)) {
+                preview.step_lines(-1);
+            }
+            if ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::ArrowRight)) {
+                preview.step_lines(10);
+            } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowRight)) {
+                preview.step_lines(1);
+            }
+            if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Home)) {
+                preview.seek_time(0.0);
+            }
+            if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::End)) {
+                preview.seek_time(f64::INFINITY);
+            }
+            if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Plus))
+                || ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::Equals))
+            {
+                preview.nudge_speed(1);
+            }
+            if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Minus)) {
+                preview.nudge_speed(-1);
+            }
+            if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F)) {
+                preview.fit_pending = true;
+            }
+            if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::E))
+                || ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::E))
+            {
+                export = true;
+            }
+            if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::R)) {
+                regenerate = true;
+            }
+        }
+        if export {
+            self.export_preview_gcode();
+        }
+        if regenerate {
+            self.regenerate_preview();
         }
     }
 
@@ -1898,7 +2089,7 @@ impl PbcCam {
                     widgets::field_row(ui, "Version", VERSION);
                     widgets::field_row(ui, "License", "MIT");
                     widgets::field_row(ui, "Built with", "Rust + egui + gerber_parser");
-                    widgets::field_row(ui, "Milestone", "Source filters + machining tool library");
+                    widgets::field_row(ui, "Milestone", "G-code preview + machine simulation");
                     widgets::field_row(
                         ui,
                         "In this project",
@@ -1948,8 +2139,8 @@ impl PbcCam {
                     shortcut_row(ui, SHORTCUT_SAVE_AS, "Save project as");
                     shortcut_row(ui, SHORTCUT_SETTINGS, "Settings");
                     shortcut_row(ui, SHORTCUT_IMPORT, "Import Gerber, Excellon or ZIP");
-                    shortcut_row(ui, "Cmd/Ctrl+E", "Export selected task G-code");
-                    shortcut_row(ui, "Cmd/Ctrl+Shift+E", "Export all tasks G-code");
+                    shortcut_row(ui, "Cmd/Ctrl+E", "Preview selected task G-code");
+                    shortcut_row(ui, "Cmd/Ctrl+Shift+E", "Preview all tasks G-code");
                     shortcut_row(ui, SHORTCUT_QUIT, "Quit");
 
                     ui.add_space(10.0);
@@ -1957,6 +2148,16 @@ impl PbcCam {
                     shortcut_row(ui, SHORTCUT_UNDO, "Undo");
                     shortcut_row(ui, SHORTCUT_REDO, "Redo");
                     shortcut_row(ui, "Delete", "Remove selected item");
+
+                    ui.add_space(10.0);
+                    shortcut_section(ui, "G-code preview");
+                    shortcut_row(ui, "Space", "Play or pause playback");
+                    shortcut_row(ui, "← / →", "Step one command; Shift steps ten");
+                    shortcut_row(ui, "Home / End", "Jump to the start or end");
+                    shortcut_row(ui, "+ / -", "Change playback speed");
+                    shortcut_row(ui, "Cmd/Ctrl+E", "Export the previewed program");
+                    shortcut_row(ui, "Cmd/Ctrl+R", "Regenerate the preview");
+                    shortcut_row(ui, "Esc", "Return to the workspace");
 
                     ui.add_space(10.0);
                     shortcut_section(ui, "Canvas");
@@ -2347,6 +2548,20 @@ impl eframe::App for PbcCam {
                 .map(|file| PathBuf::from(file.path()))
                 .collect()
         });
+
+        if self.preview.is_some() {
+            if !dropped.is_empty() {
+                self.set_status("Close the G-code preview before importing files");
+            }
+            self.tick_preview(ui.ctx());
+            ui::menu::show(ui, self);
+            ui::status_bar::show(ui, self);
+            ui::preview::show(ui, self);
+            let ctx = ui.ctx().clone();
+            self.show_dialogs(&ctx);
+            return;
+        }
+
         for path in dropped {
             self.import_path(path);
         }

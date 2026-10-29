@@ -1,7 +1,10 @@
 //! User-interface modules for the PCB-CAM desktop shell.
 
+pub(crate) mod gcode_panel;
 pub(crate) mod inspector;
 pub(crate) mod menu;
+pub(crate) mod preview;
+pub(crate) mod preview_viewport;
 pub(crate) mod project_panel;
 pub(crate) mod settings;
 pub(crate) mod status_bar;

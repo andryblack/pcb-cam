@@ -36,10 +36,10 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     let can_export = app.project().enabled_task_count() > 0;
                     let export = ui.add_enabled(
                         can_export,
-                        Button::new(RichText::new("Export all G-code").size(11.0)),
+                        Button::new(RichText::new("Preview all G-code").size(11.0)),
                     );
                     if export.clicked() {
-                        app.export_all_gcode_dialog();
+                        app.open_all_gcode_preview();
                     }
                     if !can_export {
                         export.on_disabled_hover_text("Add and enable a task first");

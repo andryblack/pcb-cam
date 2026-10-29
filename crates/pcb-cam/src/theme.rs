@@ -108,6 +108,9 @@ struct Palette {
     gerber_outline: Color32,
     excellon: Color32,
     task_overlay: Color32,
+    preview_cut: Color32,
+    preview_rapid: Color32,
+    preview_tool: Color32,
 }
 
 impl Palette {
@@ -137,6 +140,9 @@ impl Palette {
             gerber_outline: rgb(colors.gerber_outline),
             excellon: rgb(colors.excellon),
             task_overlay: rgb(colors.task_overlay),
+            preview_cut: Color32::from_rgb(255, 181, 92),
+            preview_rapid: Color32::from_rgb(102, 160, 204),
+            preview_tool: Color32::from_rgb(238, 244, 250),
         }
     }
 
@@ -166,6 +172,9 @@ impl Palette {
             gerber_outline: rgb(colors.gerber_outline),
             excellon: rgb(colors.excellon),
             task_overlay: rgb(colors.task_overlay),
+            preview_cut: Color32::from_rgb(198, 105, 16),
+            preview_rapid: Color32::from_rgb(58, 108, 158),
+            preview_tool: Color32::from_rgb(35, 44, 54),
         }
     }
 }
@@ -198,6 +207,7 @@ color_accessor! {
     canvas => canvas,
     panel => panel,
     panel_raised => panel_raised,
+    surface_hover => surface_hover,
     surface_active => surface_active,
     border => border,
     border_strong => border_strong,
@@ -217,6 +227,9 @@ color_accessor! {
     gerber_outline => gerber_outline,
     excellon => excellon,
     task_overlay => task_overlay,
+    preview_cut => preview_cut,
+    preview_rapid => preview_rapid,
+    preview_tool => preview_tool,
 }
 
 /// Currently active resolved theme.
