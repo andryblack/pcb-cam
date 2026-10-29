@@ -101,8 +101,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         app.add_spot_drill_task();
                         ui.close();
                     }
-                    let cutout =
-                        ui.add_enabled(app.can_add_cutout_task(), Button::new("Contour cut"));
+                    let cutout = ui.add_enabled(app.can_add_cutout_task(), Button::new("Edge cut"));
                     if cutout.clicked() {
                         app.add_cutout_task();
                         ui.close();

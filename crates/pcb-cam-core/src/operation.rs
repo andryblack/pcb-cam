@@ -5,9 +5,10 @@
 
 use std::collections::BTreeSet;
 
-use crate::geometry::{Bounds, ExcellonLayer, GerberLayer, Path};
+use crate::Project;
+use crate::geometry::{ExcellonLayer, GerberLayer, LayerGeometry, Path};
 use crate::tool::{Tool, ToolKind};
-use crate::{LayerId, ToolId};
+use crate::{LayerId, Point, ToolId};
 
 /// Stable identifier of a task inside a [`Project`](crate::Project).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -370,7 +371,7 @@ impl HoleMillOperation {
     }
 }
 
-/// Parameters of a contour cut (board outline or an internal cut-out).
+/// Parameters of an edge cut (board outline or an internal cut-out).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CutoutOperation {
     /// Gerber layer that supplies the closed contours.
@@ -379,6 +380,8 @@ pub struct CutoutOperation {
     pub tool: ToolId,
     /// Which side of each contour to follow.
     pub side: ContourSide,
+    /// Offset from the selected contour, in millimetres.
+    pub offset_mm: f64,
     /// Cut depth below the board surface, in millimetres.
     pub depth_mm: f64,
     /// Safe Z height, in millimetres.
@@ -392,12 +395,13 @@ pub struct CutoutOperation {
 }
 
 impl CutoutOperation {
-    /// Sensible defaults for a new contour cut.
+    /// Sensible defaults for a new edge cut.
     pub fn new(layer: LayerId, tool: ToolId) -> Self {
         Self {
             layer,
             tool,
             side: ContourSide::Outside,
+            offset_mm: 0.0,
             depth_mm: 1.8,
             retract_mm: 3.0,
             feed_mm_min: 300.0,
@@ -415,7 +419,26 @@ impl CutoutOperation {
             self.feed_mm_min,
             self.plunge_mm_min,
             self.spindle_rpm,
-        )
+        )?;
+        if !self.offset_mm.is_finite() || self.offset_mm < 0.0 {
+            return Err("edge cut offset must not be negative".into());
+        }
+        Ok(())
+    }
+
+    /// Offset all closed contours by the explicit edge-cut offset.
+    pub fn toolpaths(&self, gerber: &GerberLayer) -> Vec<Path> {
+        let distance = match self.side {
+            ContourSide::Outside => self.offset_mm,
+            ContourSide::Inside => -self.offset_mm,
+            ContourSide::OnLine => 0.0,
+        };
+        gerber
+            .closed_contours()
+            .into_iter()
+            .filter_map(|contour| crate::geometry::offset_closed_path(&contour, distance))
+            .filter(|path| path.points.len() >= 2)
+            .collect()
     }
 }
 
@@ -475,7 +498,9 @@ pub struct EngraveOperation {
     pub plunge_mm_min: f64,
     /// Side of closed contours for multi-pass engraving.
     pub side: EngraveSide,
-    /// Initial offset from the source contour, in millimetres.
+    /// Inward offset applied to the clearance boundary, in millimetres.
+    pub outline_offset_mm: f64,
+    /// Initial offset from the copper edge, in millimetres.
     pub offset_mm: f64,
     /// Number of offset passes for closed contours.
     pub passes: u32,
@@ -483,6 +508,11 @@ pub struct EngraveOperation {
     pub stepover_mm: f64,
     /// Spindle speed.
     pub spindle_rpm: u32,
+    /// Optional layer whose largest closed contour clips the clearance paths.
+    ///
+    /// `None` uses the bounding box of visible layers. The boundary itself is
+    /// never machined; it only limits the toolpaths.
+    pub boundary_layer: Option<LayerId>,
 }
 
 impl EngraveOperation {
@@ -496,10 +526,12 @@ impl EngraveOperation {
             feed_mm_min: 400.0,
             plunge_mm_min: 100.0,
             side: EngraveSide::Outside,
+            outline_offset_mm: 0.0,
             offset_mm: 0.0,
             passes: 1,
             stepover_mm: 0.5,
             spindle_rpm: 12_000,
+            boundary_layer: None,
         }
     }
 
@@ -513,6 +545,9 @@ impl EngraveOperation {
             self.plunge_mm_min,
             self.spindle_rpm,
         )?;
+        if !self.outline_offset_mm.is_finite() || self.outline_offset_mm < 0.0 {
+            return Err("clearance outline offset must not be negative".into());
+        }
         if !self.offset_mm.is_finite() || self.offset_mm < 0.0 {
             return Err("clearance offset must not be negative".into());
         }
@@ -535,20 +570,41 @@ impl EngraveOperation {
     /// The source geometry is unioned first, then buffered by the tool radius
     /// plus the requested offset. Consequently internal overlaps (for example a
     /// trace ending at a pad centre) do not produce stray contours.
-    pub fn toolpaths(
-        &self,
-        gerber: &GerberLayer,
-        tool_diameter_mm: f64,
-        clip: Option<Bounds>,
-    ) -> Vec<Path> {
+    pub fn toolpaths(&self, gerber: &GerberLayer, boundary: Option<&Path>) -> Vec<Path> {
         gerber.isolation_paths(
-            tool_diameter_mm,
+            self.outline_offset_mm,
             self.offset_mm,
             self.passes,
             self.stepover_mm,
             self.side.sign(),
-            clip,
+            boundary,
         )
+    }
+
+    /// Resolve the clipping boundary: selected layer contour or visible bounds.
+    pub fn boundary_path(&self, project: &Project) -> Option<Path> {
+        if let Some(layer_id) = self.boundary_layer
+            && layer_id != self.layer
+            && let Some(layer) = project.layer(layer_id)
+            && let LayerGeometry::Gerber(gerber) = layer.geometry()
+            && let Some(path) = gerber.closed_contours().into_iter().max_by(|a, b| {
+                let area = |path: &Path| {
+                    path.bounds()
+                        .map(|bounds| bounds.width() * bounds.height())
+                        .unwrap_or(0.0)
+                };
+                area(a).total_cmp(&area(b))
+            })
+        {
+            return Some(path);
+        }
+        let bounds = project.bounds(true)?;
+        Some(Path::closed(vec![
+            Point::new(bounds.min.x, bounds.min.y),
+            Point::new(bounds.max.x, bounds.min.y),
+            Point::new(bounds.max.x, bounds.max.y),
+            Point::new(bounds.min.x, bounds.max.y),
+        ]))
     }
 }
 
@@ -606,7 +662,7 @@ impl OperationKind {
             Self::Drill(_) => "Drill",
             Self::SpotDrill(_) => "Spot drill",
             Self::HoleMill(_) => "Hole milling",
-            Self::Cutout(_) => "Contour cut",
+            Self::Cutout(_) => "Edge cut",
             Self::Engrave(_) => "Clearance",
         }
     }
@@ -736,8 +792,12 @@ pub type DrillTask = DrillOperation;
 pub type SpotDrillTask = SpotDrillOperation;
 /// Newer name for a hole-milling task.
 pub type HoleMillTask = HoleMillOperation;
-/// Newer name for a contour cut task.
+/// Newer name for an edge cut task.
 pub type CutoutTask = CutoutOperation;
+/// Edge-cut task alias.
+pub type EdgeCutOperation = CutoutOperation;
+/// Edge-cut task alias.
+pub type EdgeCutTask = CutoutOperation;
 /// Newer name for an engraving task.
 pub type EngraveTask = EngraveOperation;
 /// User-facing name for an engraving/clearance task.
@@ -871,13 +931,13 @@ mod tests {
         clearance.offset_mm = 0.1;
         clearance.passes = 3;
         clearance.stepover_mm = 0.2;
-        let paths = clearance.toolpaths(&gerber, 0.2, None);
+        let paths = clearance.toolpaths(&gerber, None);
         assert_eq!(paths.len(), 3);
         let first = paths[0].bounds().unwrap();
         let last = paths[2].bounds().unwrap();
         assert!(last.width() > first.width());
         assert!(last.height() > first.height());
-        assert!((first.width() - 10.4).abs() < 0.05);
+        assert!((first.width() - 10.2).abs() < 0.05);
     }
 
     #[test]
@@ -900,8 +960,9 @@ mod tests {
             source_units: Some(crate::Unit::Millimeter),
             warnings: Vec::new(),
         };
-        let clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
-        let paths = clearance.toolpaths(&gerber, 0.2, None);
+        let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
+        clearance.offset_mm = 0.1;
+        let paths = clearance.toolpaths(&gerber, None);
         // A trace ending in a pad must not leave a separate circular contour
         // inside the pad. The union has one exterior at this offset.
         assert_eq!(paths.len(), 1);
@@ -922,10 +983,10 @@ mod tests {
         };
         let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
         clearance.side = EngraveSide::Outside;
-        clearance.offset_mm = 0.0;
+        clearance.offset_mm = 0.1;
         clearance.passes = 2;
         clearance.stepover_mm = 0.5;
-        let paths = clearance.toolpaths(&gerber, 0.2, None);
+        let paths = clearance.toolpaths(&gerber, None);
         assert_eq!(paths.len(), 2);
         assert!(paths.iter().all(|path| path.closed));
         let first = paths[0].bounds().unwrap();
@@ -937,8 +998,103 @@ mod tests {
     }
 
     #[test]
-    fn clearance_is_clipped_to_the_visible_bounds() {
-        let square = Path::closed(vec![
+    fn clearance_boundary_passes_are_offset_by_the_step() {
+        let copper = Path::closed(vec![
+            Point::new(2.0, 2.0),
+            Point::new(3.0, 2.0),
+            Point::new(3.0, 3.0),
+            Point::new(2.0, 3.0),
+        ]);
+        let boundary = Path::closed(vec![
+            Point::new(0.0, 0.0),
+            Point::new(5.0, 0.0),
+            Point::new(5.0, 5.0),
+            Point::new(0.0, 5.0),
+        ]);
+        let gerber = GerberLayer {
+            primitives: vec![Primitive::Region {
+                contours: vec![copper],
+                polarity: Polarity::Dark,
+            }],
+            source_units: Some(crate::Unit::Millimeter),
+            warnings: Vec::new(),
+        };
+        let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
+        clearance.outline_offset_mm = 0.1;
+        clearance.offset_mm = 0.1;
+        clearance.passes = 2;
+        clearance.stepover_mm = 0.2;
+        let paths = clearance.toolpaths(&gerber, Some(&boundary));
+        let widths: Vec<f64> = paths
+            .iter()
+            .filter_map(Path::bounds)
+            .map(|bounds| bounds.width())
+            .collect();
+        assert!(widths.iter().any(|width| (width - 1.2).abs() < 0.05));
+        assert!(widths.iter().any(|width| (width - 1.6).abs() < 0.05));
+    }
+
+    #[test]
+    fn clearance_boundary_is_not_a_toolpath() {
+        let copper = Path::closed(vec![
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 10.0),
+            Point::new(0.0, 10.0),
+        ]);
+        let boundary = copper.clone();
+        let gerber = GerberLayer {
+            primitives: vec![Primitive::Region {
+                contours: vec![copper],
+                polarity: Polarity::Dark,
+            }],
+            source_units: Some(crate::Unit::Millimeter),
+            warnings: Vec::new(),
+        };
+        let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
+        clearance.outline_offset_mm = 0.0;
+        clearance.offset_mm = 0.1;
+        let paths = clearance.toolpaths(&gerber, Some(&boundary));
+        assert!(!paths.is_empty());
+        let bounds = paths[0].bounds().unwrap();
+        assert!((bounds.min.x + 0.1).abs() < 0.05);
+        assert!((bounds.max.x - 10.1).abs() < 0.05);
+    }
+
+    #[test]
+    fn clearance_boundary_can_be_the_source_layer_bbox() {
+        let mut project = Project::new("Boundary");
+        let layer_id = project.add_layer(
+            "Copper",
+            None,
+            None,
+            LayerGeometry::Gerber(GerberLayer {
+                primitives: vec![Primitive::Stroke {
+                    path: Path::new(vec![Point::new(1.0, 1.0), Point::new(5.0, 1.0)]),
+                    aperture: Aperture::circle(0.2),
+                    polarity: Polarity::Dark,
+                }],
+                source_units: Some(crate::Unit::Millimeter),
+                warnings: Vec::new(),
+            }),
+        );
+        let mut clearance = EngraveOperation::new(layer_id, ToolId::new(1));
+        clearance.boundary_layer = Some(layer_id);
+        let boundary = clearance.boundary_path(&project).unwrap();
+        let bounds = boundary.bounds().unwrap();
+        assert!((bounds.width() - 4.2).abs() < 1e-6);
+        assert!((bounds.height() - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn clearance_boundary_clips_paths_without_machining_the_boundary() {
+        let copper = Path::closed(vec![
+            Point::new(2.0, 2.0),
+            Point::new(4.0, 2.0),
+            Point::new(4.0, 4.0),
+            Point::new(2.0, 4.0),
+        ]);
+        let boundary = Path::closed(vec![
             Point::new(0.0, 0.0),
             Point::new(10.0, 0.0),
             Point::new(10.0, 10.0),
@@ -946,25 +1102,54 @@ mod tests {
         ]);
         let gerber = GerberLayer {
             primitives: vec![Primitive::Region {
-                contours: vec![square],
+                contours: vec![copper],
                 polarity: Polarity::Dark,
             }],
             source_units: Some(crate::Unit::Millimeter),
             warnings: Vec::new(),
         };
-        let clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
-        let clip = Bounds {
-            min: Point::new(2.0, 2.0),
-            max: Point::new(6.0, 7.0),
+        let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
+        clearance.offset_mm = 0.1;
+        let paths = clearance.toolpaths(&gerber, Some(&boundary));
+        assert_eq!(paths.len(), 1);
+        let bounds = paths[0].bounds().unwrap();
+        assert!((bounds.width() - 2.2).abs() < 0.05);
+        assert!((bounds.height() - 2.2).abs() < 0.05);
+    }
+
+    #[test]
+    fn clearance_boundary_clips_the_copper_source() {
+        let copper = Path::closed(vec![
+            Point::new(2.0, 2.0),
+            Point::new(4.0, 2.0),
+            Point::new(4.0, 4.0),
+            Point::new(2.0, 4.0),
+        ]);
+        let boundary = Path::closed(vec![
+            Point::new(2.5, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 10.0),
+            Point::new(2.5, 10.0),
+        ]);
+        let gerber = GerberLayer {
+            primitives: vec![Primitive::Region {
+                contours: vec![copper],
+                polarity: Polarity::Dark,
+            }],
+            source_units: Some(crate::Unit::Millimeter),
+            warnings: Vec::new(),
         };
-        let paths = clearance.toolpaths(&gerber, 0.2, Some(clip));
+        let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
+        clearance.offset_mm = 0.1;
+        let paths = clearance.toolpaths(&gerber, Some(&boundary));
         assert!(!paths.is_empty());
-        assert!(paths.iter().flat_map(|path| &path.points).all(|point| {
-            point.x >= 2.0 - 1e-6
-                && point.x <= 6.0 + 1e-6
-                && point.y >= 2.0 - 1e-6
-                && point.y <= 7.0 + 1e-6
-        }));
+        assert!(paths.iter().all(|path| path.closed));
+        assert!(
+            paths
+                .iter()
+                .flat_map(|path| &path.points)
+                .any(|point| point.x < 2.5)
+        );
     }
 
     #[test]
@@ -976,6 +1161,6 @@ mod tests {
             OperationKind::Cutout(CutoutOperation::new(layer, ToolId::new(2))),
         );
         assert_eq!(operation.source_layer(), layer);
-        assert_eq!(operation.kind_label(), "Contour cut");
+        assert_eq!(operation.kind_label(), "Edge cut");
     }
 }

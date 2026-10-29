@@ -20,9 +20,9 @@ mod units;
 pub use layer::{Layer, LayerId, SourceFormat, SourceToolInfo, suggest_color};
 pub use operation::{
     ClearanceOperation, ClearanceTask, ContourSide, CutoutOperation, CutoutTask, DrillOperation,
-    DrillTask, EngraveOperation, EngraveSide, EngraveTask, HoleMillOperation, HoleMillTask,
-    Operation, OperationId, OperationKind, SpotDrillOperation, SpotDrillTask, Task, TaskId,
-    TaskKind,
+    DrillTask, EdgeCutOperation, EdgeCutTask, EngraveOperation, EngraveSide, EngraveTask,
+    HoleMillOperation, HoleMillTask, Operation, OperationId, OperationKind, SpotDrillOperation,
+    SpotDrillTask, Task, TaskId, TaskKind,
 };
 pub use project::{Project, UNTITLED_PROJECT};
 pub use tool::{Tool, ToolId, ToolKind, ToolLibrary};

@@ -121,7 +121,7 @@ fn demo_project_uses_source_filters_and_machining_tools() {
     assert_eq!(single["tasks"], 1);
     assert_eq!(single["paths"], 1);
     let single_text = std::fs::read_to_string(&single_path).unwrap();
-    assert!(single_text.contains("Contour cut"));
+    assert!(single_text.contains("Edge cut"));
     assert!(single_text.contains("M6"));
     let _ = std::fs::remove_file(single_path);
 
@@ -139,7 +139,7 @@ fn demo_project_uses_source_filters_and_machining_tools() {
     assert!(text.contains("Source tools: T1"));
     assert!(text.contains("Source tools: T2, T3"));
     assert!(text.contains("Helical mill"));
-    assert!(text.contains("(Contour cut"));
+    assert!(text.contains("(Edge cut"));
     assert!(text.contains("(Clearance"));
     assert!(text.contains("M30"));
     assert!(text.matches("M6").count() >= 3);

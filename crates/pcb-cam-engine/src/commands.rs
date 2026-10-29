@@ -123,6 +123,7 @@ struct OperationAddCutoutParams {
     name: Option<String>,
     tool: Option<u64>,
     side: Option<String>,
+    offset: Option<f64>,
     depth: Option<f64>,
     retract: Option<f64>,
     feed: Option<f64>,
@@ -136,6 +137,7 @@ struct OperationUpdateCutoutParams {
     name: Option<String>,
     tool: Option<u64>,
     side: Option<String>,
+    offset: Option<f64>,
     depth: Option<f64>,
     retract: Option<f64>,
     feed: Option<f64>,
@@ -149,6 +151,7 @@ struct OperationAddEngraveParams {
     name: Option<String>,
     tool: Option<u64>,
     side: Option<String>,
+    outline_offset: Option<f64>,
     offset: Option<f64>,
     passes: Option<u32>,
     stepover: Option<f64>,
@@ -157,6 +160,8 @@ struct OperationAddEngraveParams {
     feed: Option<f64>,
     plunge: Option<f64>,
     spindle: Option<u32>,
+    boundary_default: Option<bool>,
+    boundary_layer: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,6 +170,7 @@ struct OperationUpdateEngraveParams {
     name: Option<String>,
     tool: Option<u64>,
     side: Option<String>,
+    outline_offset: Option<f64>,
     offset: Option<f64>,
     passes: Option<u32>,
     stepover: Option<f64>,
@@ -173,6 +179,8 @@ struct OperationUpdateEngraveParams {
     feed: Option<f64>,
     plunge: Option<f64>,
     spindle: Option<u32>,
+    boundary_default: Option<bool>,
+    boundary_layer: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -457,7 +465,7 @@ pub(crate) fn operation_add_cutout(session: &mut Session, params: &Value) -> Res
             .layer(layer_id)
             .ok_or_else(|| format!("layer {} does not exist", params.layer))?;
         let LayerGeometry::Gerber(gerber) = layer.geometry() else {
-            return Err("contour cut requires a Gerber layer".into());
+            return Err("edge cut requires a Gerber layer".into());
         };
         if !gerber.has_closed_contours() {
             return Err("the selected layer contains no closed contours".into());
@@ -482,11 +490,15 @@ pub(crate) fn operation_add_cutout(session: &mut Session, params: &Value) -> Res
         .ok_or_else(|| "machining tool disappeared".to_owned())?;
 
     let mut cutout = CutoutOperation::new(layer_id, tool);
+    cutout.offset_mm = tool_defaults.diameter_mm() * 0.5;
     cutout.feed_mm_min = tool_defaults.feed_mm_min();
     cutout.plunge_mm_min = tool_defaults.plunge_mm_min();
     cutout.spindle_rpm = tool_defaults.spindle_rpm();
     if let Some(side) = params.side.as_deref() {
         cutout.side = parse_side(side)?;
+    }
+    if let Some(offset) = params.offset {
+        cutout.offset_mm = offset;
     }
     apply_milling_overrides(
         &mut cutout.depth_mm,
@@ -516,6 +528,12 @@ pub(crate) fn operation_update_cutout(
         .tool
         .map(|id| require_tool(session, id))
         .transpose()?;
+    let tool_radius = tool.and_then(|id| {
+        session
+            .tool_library()
+            .tool(id)
+            .map(|tool| tool.diameter_mm() * 0.5)
+    });
     let task = session
         .project_mut()
         .task_mut(OperationId::new(params.id))
@@ -524,13 +542,19 @@ pub(crate) fn operation_update_cutout(
         task.set_name(name);
     }
     let OperationKind::Cutout(cutout) = task.kind_mut() else {
-        return Err("task is not a contour cut".into());
+        return Err("task is not an edge cut".into());
     };
     if let Some(tool) = tool {
         cutout.tool = tool;
+        if let Some(radius) = tool_radius {
+            cutout.offset_mm = radius;
+        }
     }
     if let Some(side) = params.side.as_deref() {
         cutout.side = parse_side(side)?;
+    }
+    if let Some(offset) = params.offset {
+        cutout.offset_mm = offset;
     }
     apply_milling_overrides(
         &mut cutout.depth_mm,
@@ -586,11 +610,17 @@ pub(crate) fn operation_add_engrave(
         .ok_or_else(|| "machining tool disappeared".to_owned())?;
 
     let mut engrave = EngraveOperation::new(layer_id, tool);
+    engrave.outline_offset_mm = tool_defaults.diameter_mm() * 0.5;
+    engrave.offset_mm = tool_defaults.diameter_mm() * 0.5;
+    engrave.stepover_mm = tool_defaults.diameter_mm();
     engrave.feed_mm_min = tool_defaults.feed_mm_min();
     engrave.plunge_mm_min = tool_defaults.plunge_mm_min();
     engrave.spindle_rpm = tool_defaults.spindle_rpm();
     if let Some(side) = params.side.as_deref() {
         engrave.side = parse_engrave_side(side)?;
+    }
+    if let Some(outline_offset) = params.outline_offset {
+        engrave.outline_offset_mm = outline_offset;
     }
     if let Some(offset) = params.offset {
         engrave.offset_mm = offset;
@@ -600,6 +630,11 @@ pub(crate) fn operation_add_engrave(
     }
     if let Some(stepover) = params.stepover {
         engrave.stepover_mm = stepover;
+    }
+    if params.boundary_default != Some(true)
+        && let Some(layer) = params.boundary_layer
+    {
+        engrave.boundary_layer = Some(LayerId::new(layer));
     }
     apply_milling_overrides(
         &mut engrave.depth_mm,
@@ -629,6 +664,7 @@ pub(crate) fn operation_update_engrave(
         .tool
         .map(|id| require_tool(session, id))
         .transpose()?;
+    let tool_defaults = tool.and_then(|id| session.tool_library().tool(id).cloned());
     let task = session
         .project_mut()
         .task_mut(OperationId::new(params.id))
@@ -641,9 +677,17 @@ pub(crate) fn operation_update_engrave(
     };
     if let Some(tool) = tool {
         engrave.tool = tool;
+        if let Some(defaults) = tool_defaults {
+            engrave.outline_offset_mm = defaults.diameter_mm() * 0.5;
+            engrave.offset_mm = defaults.diameter_mm() * 0.5;
+            engrave.stepover_mm = defaults.diameter_mm();
+        }
     }
     if let Some(side) = params.side.as_deref() {
         engrave.side = parse_engrave_side(side)?;
+    }
+    if let Some(outline_offset) = params.outline_offset {
+        engrave.outline_offset_mm = outline_offset;
     }
     if let Some(offset) = params.offset {
         engrave.offset_mm = offset;
@@ -653,6 +697,11 @@ pub(crate) fn operation_update_engrave(
     }
     if let Some(stepover) = params.stepover {
         engrave.stepover_mm = stepover;
+    }
+    if params.boundary_default == Some(true) {
+        engrave.boundary_layer = None;
+    } else if let Some(layer) = params.boundary_layer {
+        engrave.boundary_layer = Some(LayerId::new(layer));
     }
     apply_milling_overrides(
         &mut engrave.depth_mm,
@@ -1470,6 +1519,8 @@ X20000000Y10000000D03*
 M02*
 ";
 
+    const EDGE: &str = include_str!("../../../assets/samples/demo-Edge_Cuts.gbr");
+
     const EXCELLON: &str = "\
 M48
 METRIC
@@ -1756,6 +1807,120 @@ M30
     }
 
     #[test]
+    fn edge_cut_offsets_reset_when_the_tool_changes() {
+        let mut session = Session::new();
+        let import = session
+            .execute(
+                "file.import_gerber",
+                &json!({"content": EDGE, "name": "Edge"}),
+            )
+            .unwrap();
+        let layer = import["layer"].as_u64().unwrap();
+        let first_tool = session
+            .tool_library()
+            .closest(ToolKind::EndMill, 1.0)
+            .unwrap();
+        let created = session
+            .execute(
+                "task.add_cutout",
+                &json!({"layer": layer, "tool": first_tool}),
+            )
+            .unwrap();
+        let task = session
+            .project()
+            .task(OperationId::new(created["id"].as_u64().unwrap()))
+            .unwrap();
+        let OperationKind::Cutout(cutout) = task.kind() else {
+            panic!("expected edge cut");
+        };
+        assert!((cutout.offset_mm - 0.5).abs() < 1e-9);
+
+        let second_tool = session
+            .tool_library()
+            .closest(ToolKind::EndMill, 2.0)
+            .unwrap();
+        session
+            .execute(
+                "task.update_cutout",
+                &json!({"id": created["id"], "tool": second_tool}),
+            )
+            .unwrap();
+        let task = session
+            .project()
+            .task(OperationId::new(created["id"].as_u64().unwrap()))
+            .unwrap();
+        let OperationKind::Cutout(cutout) = task.kind() else {
+            panic!("expected edge cut");
+        };
+        assert!((cutout.offset_mm - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn clearance_offsets_reset_when_the_tool_changes() {
+        let mut session = Session::new();
+        let import = session
+            .execute(
+                "file.import_gerber",
+                &json!({"content": EDGE, "name": "Edge"}),
+            )
+            .unwrap();
+        let layer = import["layer"].as_u64().unwrap();
+        let created = session
+            .execute("task.add_engrave", &json!({"layer": layer}))
+            .unwrap();
+        let second_tool = session
+            .tool_library()
+            .closest(ToolKind::EndMill, 1.0)
+            .unwrap();
+        session
+            .execute(
+                "task.update_engrave",
+                &json!({"id": created["id"], "tool": second_tool}),
+            )
+            .unwrap();
+        let task = session
+            .project()
+            .task(OperationId::new(created["id"].as_u64().unwrap()))
+            .unwrap();
+        let OperationKind::Engrave(engrave) = task.kind() else {
+            panic!("expected clearance");
+        };
+        assert!((engrave.outline_offset_mm - 0.5).abs() < 1e-9);
+        assert!((engrave.offset_mm - 0.5).abs() < 1e-9);
+        assert!((engrave.stepover_mm - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn engrave_defaults_follow_the_selected_tool_width() {
+        let mut session = Session::new();
+        let import = session
+            .execute(
+                "file.import_gerber",
+                &json!({"content": GERBER, "name": "Silk"}),
+            )
+            .unwrap();
+        let layer = import["layer"].as_u64().unwrap();
+        let created = session
+            .execute("task.add_engrave", &json!({"layer": layer}))
+            .unwrap();
+        let task = session
+            .project()
+            .task(OperationId::new(created["id"].as_u64().unwrap()))
+            .unwrap();
+        let OperationKind::Engrave(engrave) = task.kind() else {
+            panic!("expected engrave task");
+        };
+        let diameter = session
+            .tool_library()
+            .tool(engrave.tool)
+            .unwrap()
+            .diameter_mm();
+        assert!((engrave.outline_offset_mm - diameter * 0.5).abs() < 1e-9);
+        assert!((engrave.offset_mm - diameter * 0.5).abs() < 1e-9);
+        assert!((engrave.stepover_mm - diameter).abs() < 1e-9);
+    }
+
+    #[test]
     fn engrave_offset_parameters_are_stored() {
         let mut session = Session::new();
         let import = session
@@ -1771,6 +1936,7 @@ M30
                 &json!({
                     "layer": layer,
                     "side": "inside",
+                    "outline_offset": 0.05,
                     "offset": 0.2,
                     "passes": 4,
                     "stepover": 0.15,
@@ -1785,6 +1951,7 @@ M30
             panic!("expected engrave task");
         };
         assert_eq!(engrave.side, EngraveSide::Inside);
+        assert_eq!(engrave.outline_offset_mm, 0.05);
         assert_eq!(engrave.offset_mm, 0.2);
         assert_eq!(engrave.passes, 4);
         assert_eq!(engrave.stepover_mm, 0.15);
@@ -1795,6 +1962,7 @@ M30
                 &json!({
                     "id": created["id"],
                     "passes": 7,
+                    "outline_offset": 0.08,
                     "offset": 0.4,
                     "stepover": 0.3,
                 }),
@@ -1808,6 +1976,7 @@ M30
             panic!("expected engrave task");
         };
         assert_eq!(engrave.passes, 7);
+        assert_eq!(engrave.outline_offset_mm, 0.08);
         assert_eq!(engrave.offset_mm, 0.4);
         assert_eq!(engrave.stepover_mm, 0.3);
     }

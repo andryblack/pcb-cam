@@ -216,7 +216,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         id: "task.add_cutout",
-        label: "Add contour cut task",
+        label: "Add edge cut task",
         description: "Create a task cutting along closed Gerber contours.",
         shortcut: None,
         undoable: true,
@@ -252,8 +252,8 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         id: "task.update_cutout",
-        label: "Update contour cut task",
-        description: "Change the tool, side, depth or feeds of a contour cut task.",
+        label: "Update edge cut task",
+        description: "Change the tool, side, depth or feeds of an edge cut task.",
         shortcut: None,
         undoable: true,
         run: crate::commands::operation_update_cutout,

@@ -27,7 +27,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                 );
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("Ordered drilling, hole-milling, spot-drilling, contour-cut and clearance steps")
+                    RichText::new("Ordered drilling, hole-milling, spot-drilling, edge-cut and clearance steps")
                         .size(10.0)
                         .color(theme::TEXT_FAINT),
                 );
@@ -72,7 +72,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         }
                         let cutout = ui.add_enabled(
                             app.can_add_cutout_task(),
-                            Button::new("Contour cut"),
+                            Button::new("Edge cut"),
                         );
                         if cutout.clicked() {
                             app.add_cutout_task();
@@ -96,7 +96,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(
-                            "No tasks yet — import Gerber/Excellon data, then add a drilling, contour-cut or clearance task.",
+                            "No tasks yet — import Gerber/Excellon data, then add a drilling, edge-cut or clearance task.",
                         )
                         .size(11.0)
                         .color(theme::TEXT_FAINT),
@@ -289,7 +289,7 @@ fn task_subtitle(app: &PbcCam, task: &pcb_cam_core::Task) -> String {
             )
         }
         pcb_cam_core::OperationKind::Cutout(cutout) => format!(
-            "Cutout · {} · {} · {:.2} mm{enabled}",
+            "Edge cut · {} · {} · {:.2} mm{enabled}",
             tool_label(app, task),
             cutout.side.label(),
             cutout.depth_mm

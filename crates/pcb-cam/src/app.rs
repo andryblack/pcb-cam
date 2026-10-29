@@ -125,6 +125,7 @@ pub(crate) enum TaskDraftKind {
     },
     Cutout {
         side: ContourSide,
+        offset: f64,
         depth: f64,
         retract: f64,
         feed: f64,
@@ -133,6 +134,7 @@ pub(crate) enum TaskDraftKind {
     },
     Engrave {
         side: EngraveSide,
+        outline_offset: f64,
         offset: f64,
         passes: u32,
         stepover: f64,
@@ -141,6 +143,7 @@ pub(crate) enum TaskDraftKind {
         feed: f64,
         plunge: f64,
         spindle: u32,
+        boundary: Option<LayerId>,
     },
 }
 
@@ -208,6 +211,7 @@ impl TaskDraft {
             }
             OperationKind::Cutout(cutout) => TaskDraftKind::Cutout {
                 side: cutout.side,
+                offset: cutout.offset_mm,
                 depth: cutout.depth_mm,
                 retract: cutout.retract_mm,
                 feed: cutout.feed_mm_min,
@@ -216,6 +220,7 @@ impl TaskDraft {
             },
             OperationKind::Engrave(engrave) => TaskDraftKind::Engrave {
                 side: engrave.side,
+                outline_offset: engrave.outline_offset_mm,
                 offset: engrave.offset_mm,
                 passes: engrave.passes,
                 stepover: engrave.stepover_mm,
@@ -224,6 +229,7 @@ impl TaskDraft {
                 feed: engrave.feed_mm_min,
                 plunge: engrave.plunge_mm_min,
                 spindle: engrave.spindle_rpm,
+                boundary: engrave.boundary_layer,
             },
         };
         Some(Self {
@@ -311,6 +317,7 @@ impl TaskDraft {
             ),
             TaskDraftKind::Cutout {
                 side,
+                offset,
                 depth,
                 retract,
                 feed,
@@ -323,6 +330,7 @@ impl TaskDraft {
                     "name": self.name,
                     "tool": self.tool.value(),
                     "side": side.id(),
+                    "offset": offset,
                     "depth": depth,
                     "retract": retract,
                     "feed": feed,
@@ -332,6 +340,7 @@ impl TaskDraft {
             ),
             TaskDraftKind::Engrave {
                 side,
+                outline_offset,
                 offset,
                 passes,
                 stepover,
@@ -340,6 +349,7 @@ impl TaskDraft {
                 feed,
                 plunge,
                 spindle,
+                boundary,
             } => (
                 "task.update_engrave",
                 json!({
@@ -347,6 +357,7 @@ impl TaskDraft {
                     "name": self.name,
                     "tool": self.tool.value(),
                     "side": side.id(),
+                    "outline_offset": outline_offset,
                     "offset": offset,
                     "passes": passes,
                     "stepover": stepover,
@@ -355,6 +366,8 @@ impl TaskDraft {
                     "feed": feed,
                     "plunge": plunge,
                     "spindle": spindle,
+                    "boundary_default": boundary.is_none(),
+                    "boundary_layer": boundary.map(|layer| layer.value()),
                 }),
             ),
         }
@@ -428,11 +441,13 @@ struct ClearanceKey {
     layer: LayerId,
     tool: ToolId,
     diameter_bits: u64,
+    outline_offset_bits: u64,
     offset_bits: u64,
     passes: u32,
     stepover_bits: u64,
     side_bits: u64,
-    clip_bits: Option<[u64; 4]>,
+    boundary_bits: Option<[u64; 4]>,
+    boundary: Option<LayerId>,
 }
 
 #[derive(Debug)]
@@ -848,7 +863,7 @@ impl PbcCam {
 
     pub(crate) fn add_cutout_task(&mut self) {
         let layer = self.cutout_layer_for_new_task();
-        self.add_task_with_layer("task.add_cutout", layer, "Contour cut");
+        self.add_task_with_layer("task.add_cutout", layer, "Edge cut");
     }
 
     pub(crate) fn add_engrave_task(&mut self) {
@@ -975,10 +990,8 @@ impl PbcCam {
     }
 
     fn cutout_layer_for_new_task(&self) -> Option<LayerId> {
-        if let Some(Selection::Layer(id)) = self.selection
-            && self.layer_has_closed_contours(id)
-        {
-            return Some(id);
+        if let Some(Selection::Layer(id)) = self.selection {
+            return self.layer_has_closed_contours(id).then_some(id);
         }
         let layers = self.project().layers();
         layers
@@ -1497,24 +1510,30 @@ impl PbcCam {
             self.clearance_preview = None;
             return;
         };
-        let clip = self.project().bounds(true);
-        let key = ClearanceKey {
-            task: id,
-            layer: engrave.layer,
-            tool: engrave.tool,
-            diameter_bits: tool.diameter_mm().to_bits(),
-            offset_bits: engrave.offset_mm.to_bits(),
-            passes: engrave.passes,
-            stepover_bits: engrave.stepover_mm.to_bits(),
-            side_bits: engrave.side.sign().to_bits(),
-            clip_bits: clip.map(|bounds| {
+        let boundary_path = engrave.boundary_path(self.project());
+        let boundary_bits = boundary_path
+            .as_ref()
+            .and_then(|path| path.bounds())
+            .map(|bounds| {
                 [
                     bounds.min.x.to_bits(),
                     bounds.min.y.to_bits(),
                     bounds.max.x.to_bits(),
                     bounds.max.y.to_bits(),
                 ]
-            }),
+            });
+        let key = ClearanceKey {
+            task: id,
+            layer: engrave.layer,
+            tool: engrave.tool,
+            diameter_bits: tool.diameter_mm().to_bits(),
+            outline_offset_bits: engrave.outline_offset_mm.to_bits(),
+            offset_bits: engrave.offset_mm.to_bits(),
+            passes: engrave.passes,
+            stepover_bits: engrave.stepover_mm.to_bits(),
+            side_bits: engrave.side.sign().to_bits(),
+            boundary_bits,
+            boundary: engrave.boundary_layer,
         };
         if self
             .clearance_preview
@@ -1523,7 +1542,7 @@ impl PbcCam {
         {
             return;
         }
-        let paths = engrave.toolpaths(gerber, tool.diameter_mm(), clip);
+        let paths = engrave.toolpaths(gerber, boundary_path.as_ref());
         self.clearance_preview = Some(ClearancePreview { key, paths });
     }
 

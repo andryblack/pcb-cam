@@ -5,8 +5,8 @@ use eframe::egui::{
     Shape, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
 };
 use pcb_cam_core::{
-    Aperture, ApertureHole, ApertureShape, Bounds, ContourSide, ExcellonLayer, GerberLayer, Layer,
-    LayerGeometry, OperationKind, Path, Polarity, Primitive, offset_closed_path,
+    Aperture, ApertureHole, ApertureShape, Bounds, ExcellonLayer, GerberLayer, Layer,
+    LayerGeometry, OperationKind, Path, Polarity, Primitive,
 };
 
 use crate::app::{PbcCam, Selection};
@@ -701,18 +701,8 @@ fn draw_task_overlay(painter: &Painter, rect: Rect, app: &PbcCam) {
             let LayerGeometry::Gerber(gerber) = layer.geometry() else {
                 return;
             };
-            let Some(tool) = app.session.tool_library().tool(cutout.tool) else {
-                return;
-            };
-            let distance = match cutout.side {
-                ContourSide::Outside => tool.diameter_mm() * 0.5,
-                ContourSide::Inside => -tool.diameter_mm() * 0.5,
-                ContourSide::OnLine => 0.0,
-            };
-            for contour in gerber.closed_contours() {
-                if let Some(path) = offset_closed_path(&contour, distance) {
-                    draw_task_path(painter, rect, &app.view, &path, color);
-                }
+            for path in cutout.toolpaths(gerber) {
+                draw_task_path(painter, rect, &app.view, &path, color);
             }
         }
         OperationKind::Engrave(_) => {

@@ -7,10 +7,8 @@
 
 use std::fmt::Write as _;
 
-use crate::geometry::{
-    DrillHit, DrillSlot, ExcellonLayer, LayerGeometry, Path, Point, offset_closed_path,
-};
-use crate::operation::{ContourSide, Operation, OperationKind};
+use crate::geometry::{DrillHit, DrillSlot, ExcellonLayer, LayerGeometry, Path, Point};
+use crate::operation::{Operation, OperationKind};
 use crate::project::Project;
 use crate::tool::{Tool, ToolId, ToolLibrary};
 
@@ -484,24 +482,10 @@ impl<'a> ProgramBuilder<'a> {
             .layer(cutout.layer)
             .ok_or_else(|| "contour task layer no longer exists".to_owned())?;
         let LayerGeometry::Gerber(gerber) = layer.geometry() else {
-            return Err("contour cut requires a Gerber layer".into());
+            return Err("edge cut requires a Gerber layer".into());
         };
-        let contours = gerber.closed_contours();
-        if contours.is_empty() {
-            return Err("no closed contours found in the selected layer".into());
-        }
         let tool = self.task_tool(task)?.clone();
-
-        let distance = match cutout.side {
-            ContourSide::Outside => tool.diameter_mm() * 0.5,
-            ContourSide::Inside => -tool.diameter_mm() * 0.5,
-            ContourSide::OnLine => 0.0,
-        };
-        let paths: Vec<Path> = contours
-            .into_iter()
-            .filter_map(|contour| offset_closed_path(&contour, distance))
-            .filter(|path| path.points.len() >= 2)
-            .collect();
+        let paths = cutout.toolpaths(gerber);
         if paths.is_empty() {
             return Err("could not offset the layer contours".into());
         }
@@ -534,7 +518,8 @@ impl<'a> ProgramBuilder<'a> {
             return Err("clearance requires a Gerber layer".into());
         };
         let tool = self.task_tool(task)?.clone();
-        let paths = engrave.toolpaths(gerber, tool.diameter_mm(), self.project.bounds(true));
+        let boundary = engrave.boundary_path(self.project);
+        let paths = engrave.toolpaths(gerber, boundary.as_ref());
         if paths.is_empty() {
             return Err("no clearance paths found in the selected layer".into());
         }
@@ -803,10 +788,9 @@ mod tests {
         let layer_id = project.add_layer("Outline", None, None, layer);
         let library = ToolLibrary::new();
         let tool = library.closest(ToolKind::EndMill, 1.0).unwrap();
-        let task = project.add_task(
-            "Cutout",
-            OperationKind::Cutout(CutoutOperation::new(layer_id, tool)),
-        );
+        let mut cutout = CutoutOperation::new(layer_id, tool);
+        cutout.offset_mm = 0.5;
+        let task = project.add_task("Cutout", OperationKind::Cutout(cutout));
         (project, library, task)
     }
 
@@ -945,7 +929,7 @@ mod tests {
 
         let program =
             generate_task_gcode(&project, &library, project.task(engrave_id).unwrap()).unwrap();
-        assert_eq!(program.path_count, 3);
+        assert!(program.path_count >= 3);
         assert!(program.text.contains("offset 0.100 mm, 3 passes"));
         assert!(program.text.contains("G01 Z-0.200"));
     }

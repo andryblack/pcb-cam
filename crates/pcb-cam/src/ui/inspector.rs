@@ -275,7 +275,7 @@ fn layer_details(ui: &mut Ui, app: &PbcCam, id: LayerId, action: &mut Option<Ins
             }
         }
         LayerGeometry::Gerber(gerber) => {
-            if gerber.has_closed_contours() && ui.button("+ Contour cut task").clicked() {
+            if gerber.has_closed_contours() && ui.button("+ Edge cut task").clicked() {
                 *action = Some(InspectorAction::AddCutout);
             }
             if gerber.has_engraving_paths() && ui.button("+ Clearance task").clicked() {
@@ -369,6 +369,11 @@ fn task_details(
         OperationKind::HoleMill(mill) => filtered_counts(app, &task, &mill.source_tools),
         _ => (0, 0),
     };
+    let clearance_boundaries = if matches!(task.kind(), OperationKind::Engrave(_)) {
+        boundary_candidates(app, task.source_layer())
+    } else {
+        Vec::new()
+    };
     let Some(draft) = app.task_draft.as_mut() else {
         return;
     };
@@ -408,9 +413,14 @@ fn task_details(
                 .size(10.5)
                 .color(theme::TEXT_MUTED),
         );
-        if tool_selector(ui, &tools, &mut draft.tool) {
+        let tool_changed = tool_selector(ui, &tools, &mut draft.tool);
+        if tool_changed {
             commit = true;
         }
+        let tool_diameter = tools
+            .iter()
+            .find(|tool| tool.id() == draft.tool)
+            .map_or(1.0, |tool| tool.diameter_mm());
 
         for warning in &warnings {
             ui.add_space(4.0);
@@ -543,12 +553,16 @@ fn task_details(
             }
             TaskDraftKind::Cutout {
                 side,
+                offset,
                 depth,
                 retract,
                 feed,
                 plunge,
                 spindle,
             } => {
+                if tool_changed {
+                    *offset = tool_diameter * 0.5;
+                }
                 ui.add_space(8.0);
                 widgets::section_label(ui, "Cutter");
                 ui.add_space(3.0);
@@ -569,6 +583,14 @@ fn task_details(
                     }
                 });
                 commit |= changed_side;
+                commit |= inline_offset(
+                    ui,
+                    "Offset",
+                    offset,
+                    0.0..=50.0,
+                    " mm",
+                    tool_diameter * 0.5,
+                );
 
                 ui.add_space(8.0);
                 widgets::section_label(ui, "Cut parameters");
@@ -581,6 +603,7 @@ fn task_details(
             }
             TaskDraftKind::Engrave {
                 side,
+                outline_offset,
                 offset,
                 passes,
                 stepover,
@@ -589,7 +612,67 @@ fn task_details(
                 feed,
                 plunge,
                 spindle,
+                boundary,
             } => {
+                ui.add_space(8.0);
+                widgets::section_label(ui, "Clearance boundary");
+                ui.add_space(3.0);
+                let boundary_label = boundary
+                    .and_then(|layer_id| {
+                        clearance_boundaries
+                            .iter()
+                            .find(|(candidate, _)| *candidate == layer_id)
+                            .map(|(_, label)| label.clone())
+                    })
+                    .unwrap_or_else(|| {
+                        if boundary.is_some() {
+                            "Selected layer (hidden)".to_owned()
+                        } else {
+                            "Visible bounds (default)".to_owned()
+                        }
+                    });
+                egui::ComboBox::from_id_salt("clearance_boundary")
+                    .selected_text(boundary_label)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(boundary.is_none(), "Visible bounds (default)")
+                            .clicked()
+                        {
+                            *boundary = None;
+                            commit = true;
+                        }
+                        for (candidate, label) in &clearance_boundaries {
+                            if ui
+                                .selectable_label(*boundary == Some(*candidate), label)
+                                .clicked()
+                            {
+                                *boundary = Some(*candidate);
+                                commit = true;
+                            }
+                        }
+                    });
+                ui.label(
+                    RichText::new(
+                        "The boundary clips the copper source before the passes are built; it is not machined itself. Clearance passes are closed offsets around the clipped copper.",
+                    )
+                    .size(9.5)
+                    .color(theme::TEXT_FAINT),
+                );
+                ui.add_space(3.0);
+                commit |= inline_offset(
+                    ui,
+                    "Outline offset",
+                    outline_offset,
+                    0.0..=50.0,
+                    " mm",
+                    tool_diameter * 0.5,
+                );
+                ui.label(
+                    RichText::new("Positive values shrink the boundary inward. New tasks default to half the tool width.")
+                        .size(9.0)
+                        .color(theme::TEXT_FAINT),
+                );
+
                 ui.add_space(8.0);
                 widgets::section_label(ui, "Offset passes");
                 ui.add_space(3.0);
@@ -606,12 +689,26 @@ fn task_details(
                     }
                 });
                 commit |= changed_side;
-                commit |= inline_f64(ui, "Offset", offset, 0.0..=50.0, " mm");
+                commit |= inline_offset(
+                    ui,
+                    "Offset",
+                    offset,
+                    0.0..=50.0,
+                    " mm",
+                    tool_diameter * 0.5,
+                );
                 commit |= inline_u32(ui, "Passes", passes, 1..=100, "", 1.0);
-                commit |= inline_f64(ui, "Offset step", stepover, 0.0..=50.0, " mm");
+                commit |= inline_offset(
+                    ui,
+                    "Offset step",
+                    stepover,
+                    0.0..=50.0,
+                    " mm",
+                    tool_diameter,
+                );
                 ui.label(
                     RichText::new(
-                        "Unions copper, then offsets by tool radius + Offset. Clipped to visible-layer bounds. Outside expands copper; Inside cuts into it.",
+                        "The boundary clips the copper source before passes are built. It is not machined itself; Offset is measured from the copper edge.",
                     )
                     .size(9.5)
                     .color(theme::TEXT_FAINT),
@@ -680,6 +777,24 @@ fn task_details(
             *action = Some(InspectorAction::MoveTask(id, index + 1));
         }
     });
+}
+
+fn boundary_candidates(app: &PbcCam, source: LayerId) -> Vec<(LayerId, String)> {
+    let mut candidates: Vec<(LayerId, String, f64)> = Vec::new();
+    for layer in app.project().layers().iter().filter(|layer| {
+        layer.id() != source && matches!(layer.geometry(), LayerGeometry::Gerber(_))
+    }) {
+        let area = layer
+            .bounds()
+            .map(|bounds| bounds.width() * bounds.height())
+            .unwrap_or(0.0);
+        candidates.push((layer.id(), layer.name().to_owned(), area));
+    }
+    candidates.sort_by(|a, b| b.2.total_cmp(&a.2));
+    candidates
+        .into_iter()
+        .map(|(layer, label, _)| (layer, label))
+        .collect()
 }
 
 fn source_hole_selector(
@@ -751,6 +866,42 @@ fn tool_selector(ui: &mut Ui, tools: &[Tool], selected: &mut ToolId) -> bool {
             }
         });
     *selected != before
+}
+
+fn inline_offset(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut f64,
+    range: std::ops::RangeInclusive<f64>,
+    suffix: &str,
+    default: f64,
+) -> bool {
+    let mut commit = false;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).size(10.5).color(theme::TEXT_MUTED));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let reset = ui
+                .add(Button::new(RichText::new("↺").size(11.0)).min_size(vec2(18.0, 16.0)))
+                .on_hover_text(format!("Reset to {default:.3} mm"));
+            let response = ui.add(
+                egui::DragValue::new(value)
+                    .range(range)
+                    .speed(0.05)
+                    .max_decimals(3)
+                    .suffix(suffix),
+            );
+            commit = response.drag_stopped()
+                || (response.changed() && response.lost_focus())
+                || (response.changed()
+                    && response.hovered()
+                    && ui.input(|input| input.pointer.any_released()));
+            if reset.clicked() {
+                *value = default;
+                commit = true;
+            }
+        });
+    });
+    commit
 }
 
 fn inline_f64(

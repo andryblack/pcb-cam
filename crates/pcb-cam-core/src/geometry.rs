@@ -451,43 +451,114 @@ impl GerberLayer {
         self.primitives.len()
     }
 
-    /// Closed contours suitable for a contour cut.
+    /// Closed contours suitable for an edge cut.
     ///
-    /// Only closed strokes, paths whose last point meets their first, and
-    /// region outlines are returned. Flashes and open paths are ignored.
+    /// KiCad writes a board outline as a sequence of separate line and arc
+    /// strokes. Those strokes are joined by endpoint proximity here, so a
+    /// closed profile does not have to be a single Gerber stroke.
     pub fn closed_contours(&self) -> Vec<Path> {
-        let mut contours = Vec::new();
+        let mut contours = self.joined_stroke_contours();
         for primitive in &self.primitives {
-            match primitive {
-                Primitive::Stroke { path, .. } => {
-                    if let Some(path) = normalized_contour(path, true) {
+            if let Primitive::Region {
+                contours: region, ..
+            } = primitive
+            {
+                for contour in region {
+                    if let Some(path) = normalized_contour(contour, true) {
                         contours.push(path);
                     }
                 }
-                Primitive::Region {
-                    contours: region, ..
-                } => {
-                    for contour in region {
-                        if let Some(path) = normalized_contour(contour, true) {
-                            contours.push(path);
-                        }
-                    }
-                }
-                Primitive::Flash { .. } => {}
             }
         }
         contours
     }
 
-    /// Whether any closed contour is available without cloning the geometry.
+    /// Whether any closed contour is available.
     pub fn has_closed_contours(&self) -> bool {
-        self.primitives.iter().any(|primitive| match primitive {
-            Primitive::Stroke { path, .. } => normalized_contour(path, true).is_some(),
-            Primitive::Region { contours, .. } => contours
-                .iter()
-                .any(|contour| normalized_contour(contour, true).is_some()),
-            Primitive::Flash { .. } => false,
-        })
+        !self.closed_contours().is_empty()
+    }
+
+    fn joined_stroke_contours(&self) -> Vec<Path> {
+        const JOIN_TOLERANCE_MM: f64 = 0.002;
+
+        let mut contours = Vec::new();
+        let mut open = Vec::new();
+        for primitive in &self.primitives {
+            let Primitive::Stroke { path, polarity, .. } = primitive else {
+                continue;
+            };
+            if let Some(closed) = normalized_contour(path, true) {
+                contours.push(closed);
+            } else if *polarity == Polarity::Dark && path.points.len() >= 2 {
+                open.push(path);
+            }
+        }
+
+        let mut used = vec![false; open.len()];
+        for start_index in 0..open.len() {
+            if used[start_index] {
+                continue;
+            }
+            used[start_index] = true;
+            let start = open[start_index];
+            let first = start.points[0];
+            let mut points = start.points.clone();
+            let mut current = *points.last().unwrap();
+            let mut closed = false;
+
+            loop {
+                if points.len() >= 3 && current.distance(first) <= JOIN_TOLERANCE_MM {
+                    closed = true;
+                    break;
+                }
+                let mut best: Option<(usize, bool, f64)> = None;
+                for (index, candidate) in open.iter().enumerate() {
+                    if used[index] {
+                        continue;
+                    }
+                    let candidate_start = candidate.points[0];
+                    let candidate_end = *candidate.points.last().unwrap();
+                    for (reversed, endpoint) in [(false, candidate_start), (true, candidate_end)] {
+                        let distance = current.distance(endpoint);
+                        if distance <= JOIN_TOLERANCE_MM
+                            && best.is_none_or(|(_, _, best_distance)| distance < best_distance)
+                        {
+                            best = Some((index, reversed, distance));
+                        }
+                    }
+                }
+                let Some((index, reversed, _)) = best else {
+                    break;
+                };
+                used[index] = true;
+                let candidate = open[index];
+                if reversed {
+                    for point in candidate.points.iter().rev().skip(1) {
+                        points.push(*point);
+                    }
+                    current = candidate.points[0];
+                } else {
+                    for point in candidate.points.iter().skip(1) {
+                        points.push(*point);
+                    }
+                    current = *candidate.points.last().unwrap();
+                }
+            }
+
+            if closed {
+                if points.len() > 3
+                    && points
+                        .last()
+                        .is_some_and(|last| last.distance(first) <= JOIN_TOLERANCE_MM)
+                {
+                    points.pop();
+                }
+                if points.len() >= 3 {
+                    contours.push(Path::closed(points));
+                }
+            }
+        }
+        contours
     }
 
     /// Whether any engraving path is available without cloning the geometry.
@@ -590,19 +661,22 @@ impl GerberLayer {
     ///
     /// This follows the FlatCAM isolation model: all copper primitives are
     /// unioned first, then the union is buffered by the tool radius plus the
-    /// requested offset. Consequently a track ending inside a pad does not
-    /// produce a separate circle inside that pad.
+    /// requested offset.
+    ///
+    /// An optional boundary clips the copper source before the passes are
+    /// built. It is not emitted as a toolpath; the isolation contours are the
+    /// normal closed offsets around the resulting copper.
     pub fn isolation_paths(
         &self,
-        tool_diameter_mm: f64,
+        outline_offset_mm: f64,
         offset_mm: f64,
         passes: u32,
         stepover_mm: f64,
         direction: f64,
-        clip: Option<Bounds>,
+        boundary: Option<&Path>,
     ) -> Vec<Path> {
-        if !tool_diameter_mm.is_finite()
-            || tool_diameter_mm <= 0.0
+        if !outline_offset_mm.is_finite()
+            || outline_offset_mm < 0.0
             || !offset_mm.is_finite()
             || offset_mm < 0.0
             || !stepover_mm.is_finite()
@@ -614,15 +688,37 @@ impl GerberLayer {
         let Some(copper) = self.copper_geometry() else {
             return Vec::new();
         };
-        let radius = tool_diameter_mm * 0.5;
-        let clip_geometry = clip.and_then(bounds_polygon);
+        let boundary: Option<GeoMultiPolygon<f64>> = boundary
+            .and_then(|path| geo_polygon(&path.points, &[]))
+            .map(|polygon| GeoMultiPolygon::new(vec![polygon]));
+        // The boundary restricts which copper is machined. It is not a
+        // toolpath itself; isolation passes are generated around the clipped
+        // copper exactly as in FlatCAM.
+        let copper = if let Some(boundary) = &boundary {
+            let effective = if outline_offset_mm > 0.0 {
+                boundary.buffer(-outline_offset_mm)
+            } else {
+                boundary.clone()
+            };
+            if effective.0.is_empty() {
+                return Vec::new();
+            }
+            copper.intersection(&effective)
+        } else {
+            copper
+        };
+        if copper.0.is_empty() {
+            return Vec::new();
+        }
+
         let mut paths = Vec::new();
         for pass in 0..passes {
-            let distance = direction * (radius + offset_mm + f64::from(pass) * stepover_mm);
-            let mut buffered = copper.buffer(distance);
-            if let Some(clip_geometry) = &clip_geometry {
-                buffered = buffered.intersection(clip_geometry);
-            }
+            let distance = direction * (offset_mm + f64::from(pass) * stepover_mm);
+            let buffered = if distance.abs() < 1e-12 {
+                copper.clone()
+            } else {
+                copper.buffer(distance)
+            };
             for polygon in buffered.0 {
                 push_geo_ring(&mut paths, polygon.exterior());
                 for interior in polygon.interiors() {
@@ -630,21 +726,9 @@ impl GerberLayer {
                 }
             }
         }
+
         paths
     }
-}
-
-fn bounds_polygon(bounds: Bounds) -> Option<GeoMultiPolygon<f64>> {
-    if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
-        return None;
-    }
-    let ring = vec![
-        Point::new(bounds.min.x, bounds.min.y),
-        Point::new(bounds.max.x, bounds.min.y),
-        Point::new(bounds.max.x, bounds.max.y),
-        Point::new(bounds.min.x, bounds.max.y),
-    ];
-    geo_polygon(&ring, &[]).map(|polygon| GeoMultiPolygon::new(vec![polygon]))
 }
 
 fn geo_line(path: &Path) -> Option<GeoLineString<f64>> {
@@ -1011,6 +1095,27 @@ fn obround_outline(center: Point, width: f64, height: f64) -> Vec<Point> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn separate_strokes_join_into_a_closed_contour() {
+        let mut layer = GerberLayer::default();
+        for points in [
+            [Point::new(0.0, 0.0), Point::new(10.0, 0.0)],
+            [Point::new(10.0, 0.0), Point::new(10.0, 10.0)],
+            [Point::new(10.0, 10.0), Point::new(0.0, 10.001)],
+            [Point::new(0.0, 10.0), Point::new(0.0, 0.0)],
+        ] {
+            layer.primitives.push(Primitive::Stroke {
+                path: Path::new(points.to_vec()),
+                aperture: Aperture::circle(0.1),
+                polarity: Polarity::Dark,
+            });
+        }
+        let contours = layer.closed_contours();
+        assert_eq!(contours.len(), 1);
+        assert!(contours[0].closed);
+        assert!(layer.has_closed_contours());
+    }
 
     #[test]
     fn bounds_from_points_and_expansion() {

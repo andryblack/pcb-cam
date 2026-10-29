@@ -56,11 +56,11 @@ Implemented:
   - **Drilling** — source-hole filter, drill bit, vertical plunge only, depth, retract, feed, plunge, dwell, spindle
   - **Hole milling** — source-hole/slot filter, end mill or V-bit, helical interpolation for holes larger than the tool, routed slots, depth, retract, feed, plunge, dwell, helical step-down, spindle
   - **Spot drilling** — source-hole filter, Cone machining tool, depth, retract, feed, plunge, dwell, spindle; uses hole centres only and ignores diameters/slots
-  - **Contour cut** — machining tool, outside/inside/on-line offset, depth, retract, feed, plunge, spindle
-  - **Clearance** — isolation routing around unioned copper, tool radius + outside/inside offset, pass count, offset step, depth, retract, feed, plunge, spindle
+  - **Edge cut** — machining tool, outside/inside/on-line offset (defaults to tool radius), depth, retract, feed, plunge, spindle
+  - **Clearance** — isolation routing around unioned copper, visible-bounds or Gerber-boundary-layer clipping, outline offset, copper offset, pass count, offset step, depth, retract, feed, plunge, spindle
 - Drilling tasks can be created even when the library has no exact cutter; the closest tool is selected and the inspector shows warnings derived from the selected holes/slots. G-code export is blocked while a task has unresolved warnings.
 - Task timeline with selection, enable/disable, creation, reordering and online editing in the inspector
-- Selected-task canvas overlay in red: drill/slot positions, spot-drill centres, contour-cut offset toolpath or clearance paths
+- Selected-task canvas overlay in red: drill/slot positions, spot-drill centres, edge-cut offset toolpath or clearance paths
 - **Helical interpolation** for holes larger than the selected end mill/V-bit. A 1.0 mm end mill can machine a 1.5 mm hole with a helical path; a drill bit is rejected because it cannot side-cut.
 - G-code export:
   - selected task only
@@ -90,7 +90,7 @@ task**, while the machining tool says **what cutter performs the work**.
 Next:
 
 - Use Gerber source tools (apertures) to filter cut-out and clearance objects
-- Contour cut tabs and multi-pass depth stepping
+- Edge cut tabs and multi-pass depth stepping
 - Project save/load (`.pcbam` or JSON)
 - G-code preview and machine simulation
 - Machine/post-processor profiles and tool wear data
@@ -99,10 +99,10 @@ Next:
 
 - Import geometry is flattened to millimetres at load time; the source path is kept on the layer.
 - Gerber step-and-repeat, aperture blocks and negative image polarity are not fully supported yet; import reports warnings instead of failing.
-- Gerber source apertures are listed, but currently only **drilling, hole-milling and spot-drilling tasks** use source tools as filters. Contour-cut and clearance tasks process the whole layer.
+- Gerber source apertures are listed, but currently only **drilling, hole-milling and spot-drilling tasks** use source tools as filters. Edge-cut and clearance tasks process the whole layer.
 - Gerber regions are triangulated; regions with multiple nested contours/islands may not be fully supported yet.
 - Contour offsets use mitred joins without a full self-intersection cleanup.
-- Clearance follows isolation routing: all copper primitives are unioned first, then buffered by tool radius + offset for each pass, and clipped to the bounding box of visible layers. Traces ending inside pads therefore do not produce separate circles inside the pad; Outside expands the copper, Inside cuts into it.
+- Clearance follows isolation routing: all copper primitives are unioned first, then buffered by the explicit copper offset for each pass, bounded by a clearance boundary. By default the boundary is the bounding box of visible layers; any Gerber layer can be selected instead. Its largest closed contour is used, or its bounds when it has no closed contour. The boundary clips the copper source before the passes are built and is not machined itself. Each pass is a closed offset around the clipped copper, so passes remain separate and do not cut the tracks. New tasks default to: outline offset = tool radius, copper offset = tool radius, offset step = tool diameter. Tool width is not used by the path builder; the explicit offsets control the geometry. Traces ending inside pads therefore do not produce separate circles inside the pad; Outside expands the copper, Inside cuts into it.
 - Slots narrower than the machining tool are rejected; wider slots are routed on the centreline, which may not clear the full slot width.
 - Projects are not saved yet; the machining tool library is persisted, generated G-code is the durable output.
 - G-code is emitted in millimetres with explicit drill/plunge moves. It does not yet include machine-specific headers, work offsets or cutter compensation.
@@ -167,7 +167,7 @@ The script builds a release binary, assembles `PCB-CAM.app` with the app icon an
    - **Drilling** needs an Excellon layer and a matching drill bit; it only plunges vertically.
    - **Hole milling** needs an Excellon layer and an end mill/V-bit; it can helically interpolate larger holes and route slots.
    - **Spot drill** needs an Excellon layer with holes; it punches only hole centres with a Cone tool.
-   - **Contour cut** needs a Gerber layer with closed contours.
+   - **Edge cut** needs a Gerber layer with closed contours. KiCad-style Edge.Cuts files made of separate line and arc strokes are joined automatically.
    - **Clearance** needs a Gerber layer with paths.
 7. Select the task. Edit it directly in the inspector: choose one
    **machining tool**, check the **source tools** for drilling/hole milling/spot drilling, and change
@@ -180,7 +180,7 @@ The script builds a release binary, assembles `PCB-CAM.app` with the app icon an
 
 The demo project contains top copper, a rounded board outline with arcs, a
 silkscreen legend and a drill file. It is set up as four tasks: a drilling task for the 0.8 mm holes, a hole-milling
-task for the 1.0/3.0 mm holes, a contour cut and a clearance pass.
+task for the 1.0/3.0 mm holes, an edge cut and a clearance pass.
 
 ## Quality checks
 
