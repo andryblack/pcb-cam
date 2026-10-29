@@ -62,6 +62,9 @@ Implemented:
 - Task timeline with selection, enable/disable, creation, reordering and online editing in the inspector
 - Selected-task canvas overlay in red: drill/slot positions, spot-drill centres, edge-cut offset toolpath or clearance paths
 - **Helical interpolation** for holes larger than the selected end mill/V-bit. A 1.0 mm end mill can machine a 1.5 mm hole with a helical path; a drill bit is rejected because it cannot side-cut.
+- G-code move ordering:
+  - drilling and spot drilling visit the nearest remaining hole
+  - clearance keeps pass order and orders contours by the nearest entry vertex
 - G-code export:
   - selected task only
   - all enabled tasks in timeline order

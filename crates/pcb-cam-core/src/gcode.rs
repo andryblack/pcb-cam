@@ -105,6 +105,7 @@ struct ProgramBuilder<'a> {
     cut_length_mm: f64,
     origin: Point,
     rapid_feed_mm_min: f64,
+    position: Point,
 }
 
 impl<'a> ProgramBuilder<'a> {
@@ -148,10 +149,12 @@ impl<'a> ProgramBuilder<'a> {
             cut_length_mm: 0.0,
             origin,
             rapid_feed_mm_min: machining.rapid_feed_mm_min,
+            position: origin,
         }
     }
 
     fn travel_xy(&mut self, x: f64, y: f64) {
+        self.position = Point::new(x + self.origin.x, y + self.origin.y);
         if self.rapid_feed_mm_min > 0.0 {
             let _ = writeln!(
                 self.text,
@@ -240,6 +243,7 @@ impl<'a> ProgramBuilder<'a> {
         );
         let _ = writeln!(self.text, "G00 Z{:.3}", drill.retract_mm);
 
+        let selected_holes = order_holes_nearest(selected_holes, self.position);
         for hole in selected_holes {
             if (hole.diameter_mm - tool.diameter_mm()).abs() > 1e-6 {
                 return Err(format!(
@@ -398,6 +402,7 @@ impl<'a> ProgramBuilder<'a> {
         }
         let _ = writeln!(self.text, "G00 Z{:.3}", spot.retract_mm);
 
+        let selected_holes = order_holes_nearest(selected_holes, self.position);
         for hole in selected_holes {
             let x = self.gx(hole.position.x);
             let y = self.gy(hole.position.y);
@@ -494,6 +499,7 @@ impl<'a> ProgramBuilder<'a> {
             );
         }
         let _ = writeln!(self.text, "G00 Z{:.3}", mill.retract_mm);
+        self.position = hole.position;
         self.path_count += 1;
         self.cut_length_mm += std::f64::consts::TAU * path_radius * passes;
         Ok(())
@@ -546,8 +552,15 @@ impl<'a> ProgramBuilder<'a> {
         };
         let tool = self.task_tool(task)?.clone();
         let boundary = engrave.boundary_path(self.project);
-        let paths = engrave.toolpaths(gerber, boundary.as_ref());
-        if paths.is_empty() {
+        let passes = gerber.isolation_passes(
+            engrave.outline_offset_mm,
+            engrave.offset_mm,
+            engrave.passes,
+            engrave.stepover_mm,
+            engrave.side.sign(),
+            boundary.as_ref(),
+        );
+        if passes.iter().all(Vec::is_empty) {
             return Err("no clearance paths found in the selected layer".into());
         }
 
@@ -561,14 +574,17 @@ impl<'a> ProgramBuilder<'a> {
             if engrave.passes == 1 { "" } else { "es" },
             engrave.stepover_mm
         );
-        for path in &paths {
-            self.cut_path(
-                path,
-                engrave.depth_mm,
-                engrave.retract_mm,
-                engrave.feed_mm_min,
-                engrave.plunge_mm_min,
-            );
+        for pass in passes {
+            let ordered = order_paths_nearest(pass, self.position);
+            for path in &ordered {
+                self.cut_path(
+                    path,
+                    engrave.depth_mm,
+                    engrave.retract_mm,
+                    engrave.feed_mm_min,
+                    engrave.plunge_mm_min,
+                );
+            }
         }
         self.last_safe_z = engrave.retract_mm;
         Ok(())
@@ -636,6 +652,7 @@ impl<'a> ProgramBuilder<'a> {
             let _ = writeln!(self.text, "G04 P{dwell:.2}");
         }
         let _ = writeln!(self.text, "G00 Z{retract:.3}");
+        self.position = slot.end;
         self.slot_count += 1;
         self.cut_length_mm += slot.start.distance(slot.end);
     }
@@ -671,6 +688,11 @@ impl<'a> ProgramBuilder<'a> {
         }
         let _ = writeln!(self.text, "G00 Z{retract:.3}");
 
+        self.position = if path.closed {
+            start
+        } else {
+            path.points.last().copied().unwrap_or(start)
+        };
         self.path_count += 1;
         self.cut_length_mm += path.length();
     }
@@ -705,6 +727,120 @@ fn source_tool_list(tools: &std::collections::BTreeSet<u32>) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     }
+}
+
+fn order_holes_nearest(mut holes: Vec<&DrillHit>, start: Point) -> Vec<&DrillHit> {
+    let mut ordered = Vec::with_capacity(holes.len());
+    let mut current = start;
+    while !holes.is_empty() {
+        let index = holes
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                a.position
+                    .distance(current)
+                    .total_cmp(&b.position.distance(current))
+            })
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        let hole = holes.swap_remove(index);
+        ordered.push(hole);
+        current = hole.position;
+    }
+    ordered
+}
+
+fn order_paths_nearest(paths: Vec<Path>, start: Point) -> Vec<Path> {
+    let mut remaining = paths;
+    let mut ordered = Vec::with_capacity(remaining.len());
+    let mut current = start;
+    while !remaining.is_empty() {
+        let mut best: Option<(usize, usize, Point, f64)> = None;
+        for (index, path) in remaining.iter().enumerate() {
+            let Some((segment, entry, distance)) = nearest_path_entry(path, current) else {
+                continue;
+            };
+            if best.is_none_or(|(_, _, _, best_distance)| distance < best_distance) {
+                best = Some((index, segment, entry, distance));
+            }
+        }
+        let Some((index, segment, entry, _)) = best else {
+            break;
+        };
+        let mut path = remaining.swap_remove(index);
+        if path.closed && path.points.len() >= 2 {
+            let n = path.points.len();
+            let segment_start = path.points[segment];
+            let segment_end = path.points[(segment + 1) % n];
+            if entry.distance(segment_start) <= 1e-9 {
+                path.points.rotate_left(segment);
+            } else if entry.distance(segment_end) <= 1e-9 {
+                path.points.rotate_left((segment + 1) % n);
+            } else {
+                let mut points = Vec::with_capacity(n + 1);
+                points.push(entry);
+                for offset in 1..=n {
+                    points.push(path.points[(segment + offset) % n]);
+                }
+                path.points = points;
+            }
+        } else if !path.closed
+            && path.points.last().is_some_and(|last| {
+                last.distance(current) + 1e-12 < path.points[0].distance(current)
+            })
+        {
+            path.points.reverse();
+        }
+        let entry = path.points.first().copied().unwrap_or(current);
+        let exit = if path.closed {
+            entry
+        } else {
+            path.points.last().copied().unwrap_or(entry)
+        };
+        ordered.push(path);
+        current = exit;
+    }
+    ordered
+}
+
+/// Nearest entry point on a path: nearest segment point for closed paths,
+/// nearest endpoint for open paths.
+fn nearest_path_entry(path: &Path, current: Point) -> Option<(usize, Point, f64)> {
+    let first = path.points.first().copied()?;
+    if path.closed && path.points.len() >= 2 {
+        let n = path.points.len();
+        let mut best: Option<(usize, Point, f64)> = None;
+        for index in 0..n {
+            let a = path.points[index];
+            let b = path.points[(index + 1) % n];
+            let (point, distance) = nearest_on_segment(a, b, current);
+            if best.is_none_or(|(_, _, best_distance)| distance < best_distance) {
+                best = Some((index, point, distance));
+            }
+        }
+        best
+    } else {
+        let last = *path.points.last()?;
+        let start_distance = first.distance(current);
+        let end_distance = last.distance(current);
+        if end_distance + 1e-12 < start_distance {
+            Some((0, last, end_distance))
+        } else {
+            Some((0, first, start_distance))
+        }
+    }
+}
+
+fn nearest_on_segment(a: Point, b: Point, point: Point) -> (Point, f64) {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let length_squared = dx * dx + dy * dy;
+    if length_squared <= f64::EPSILON {
+        return (a, a.distance(point));
+    }
+    let t = (((point.x - a.x) * dx + (point.y - a.y) * dy) / length_squared).clamp(0.0, 1.0);
+    let closest = Point::new(a.x + dx * t, a.y + dy * t);
+    (closest, closest.distance(point))
 }
 
 /// Format one coordinate for previews.
@@ -896,6 +1032,62 @@ mod tests {
         assert!(program.text.contains("(Travel feed: 1234 mm/min)"));
         assert!(program.text.contains("(Safe Z: 4.500 mm)"));
         assert!(program.text.contains("G01 X10.000 Y10.000 F1234.0"));
+    }
+
+    #[test]
+    fn drilling_visits_nearest_hole_first() {
+        let holes = [
+            DrillHit {
+                position: Point::new(20.0, 0.0),
+                tool: 1,
+                diameter_mm: 0.8,
+            },
+            DrillHit {
+                position: Point::new(0.0, 0.0),
+                tool: 1,
+                diameter_mm: 0.8,
+            },
+            DrillHit {
+                position: Point::new(10.0, 0.0),
+                tool: 1,
+                diameter_mm: 0.8,
+            },
+        ];
+        let ordered = order_holes_nearest(holes.iter().collect(), Point::new(0.0, 0.0));
+        let xs: Vec<f64> = ordered.iter().map(|hole| hole.position.x).collect();
+        assert_eq!(xs, vec![0.0, 10.0, 20.0]);
+    }
+
+    #[test]
+    fn clearance_orders_paths_and_rotates_entry() {
+        let square = |x: f64, y: f64| {
+            Path::closed(vec![
+                Point::new(x, y),
+                Point::new(x + 1.0, y),
+                Point::new(x + 1.0, y + 1.0),
+                Point::new(x, y + 1.0),
+            ])
+        };
+        let ordered = order_paths_nearest(
+            vec![square(10.0, 0.0), square(0.0, 0.0)],
+            Point::new(11.0, 1.0),
+        );
+        assert_eq!(ordered[0].points[0], Point::new(11.0, 1.0));
+        assert_eq!(ordered[1].points[0], Point::new(1.0, 1.0));
+    }
+
+    #[test]
+    fn clearance_can_enter_on_a_segment() {
+        let square = Path::closed(vec![
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 10.0),
+            Point::new(0.0, 10.0),
+        ]);
+        let ordered = order_paths_nearest(vec![square], Point::new(5.0, -4.0));
+        let entry = ordered[0].points[0];
+        assert!((entry.x - 5.0).abs() < 1e-9);
+        assert!(entry.y.abs() < 1e-9);
     }
 
     #[test]
