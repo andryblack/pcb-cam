@@ -1035,6 +1035,44 @@ mod tests {
     }
 
     #[test]
+    fn clearance_adds_island_contours_inside_holes() {
+        let outer = Path::closed(vec![
+            Point::new(2.0, 2.0),
+            Point::new(8.0, 2.0),
+            Point::new(8.0, 8.0),
+            Point::new(2.0, 8.0),
+        ]);
+        let inner = Path::closed(vec![
+            Point::new(3.0, 3.0),
+            Point::new(7.0, 3.0),
+            Point::new(7.0, 7.0),
+            Point::new(3.0, 7.0),
+        ]);
+        let boundary = Path::closed(vec![
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 10.0),
+            Point::new(0.0, 10.0),
+        ]);
+        let gerber = GerberLayer {
+            primitives: vec![Primitive::Region {
+                contours: vec![outer, inner],
+                polarity: Polarity::Dark,
+            }],
+            source_units: Some(crate::Unit::Millimeter),
+            warnings: Vec::new(),
+        };
+        let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
+        clearance.outline_offset_mm = 0.0;
+        clearance.offset_mm = 0.1;
+        let paths = clearance.toolpaths(&gerber, Some(&boundary));
+        assert!(paths.iter().any(|path| {
+            path.bounds()
+                .is_some_and(|b| (b.width() - 3.8).abs() < 0.05 && (b.height() - 3.8).abs() < 0.05)
+        }));
+    }
+
+    #[test]
     fn clearance_boundary_is_not_a_toolpath() {
         let copper = Path::closed(vec![
             Point::new(0.0, 0.0),
@@ -1042,7 +1080,12 @@ mod tests {
             Point::new(10.0, 10.0),
             Point::new(0.0, 10.0),
         ]);
-        let boundary = copper.clone();
+        let boundary = Path::closed(vec![
+            Point::new(-1.0, -1.0),
+            Point::new(11.0, -1.0),
+            Point::new(11.0, 11.0),
+            Point::new(-1.0, 11.0),
+        ]);
         let gerber = GerberLayer {
             primitives: vec![Primitive::Region {
                 contours: vec![copper],

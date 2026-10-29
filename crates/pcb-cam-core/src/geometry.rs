@@ -8,8 +8,9 @@ use std::f64::consts::TAU;
 
 use geo::orient::{Direction, Orient};
 use geo::{
-    BooleanOps, Buffer, Coord as GeoCoord, LineString as GeoLineString,
-    MultiPolygon as GeoMultiPolygon, Polygon as GeoPolygon, unary_union,
+    BooleanOps, Buffer, Contains, Coord as GeoCoord, Intersects, LineString as GeoLineString,
+    MultiLineString as GeoMultiLineString, MultiPolygon as GeoMultiPolygon, Point as GeoPoint,
+    Polygon as GeoPolygon, unary_union,
 };
 
 /// A point or vector in board space, in millimetres.
@@ -663,10 +664,12 @@ impl GerberLayer {
     /// unioned first, then the union is buffered by the tool radius plus the
     /// requested offset.
     ///
-    /// An optional boundary clips the copper source before the passes are
-    /// built. It is not emitted as a toolpath; the isolation contours are the
-    /// normal closed offsets around the resulting copper.
-    pub fn isolation_paths(
+    /// With a boundary, the outside strategy builds a work region from the
+    /// boundary, subtracts the copper clearance, emits the holes of the
+    /// remaining region, adds the contour of every island nested inside a
+    /// hole, and adds the outer contour when the copper clearance reaches the
+    /// work boundary.
+    pub fn isolation_passes(
         &self,
         outline_offset_mm: f64,
         offset_mm: f64,
@@ -674,7 +677,7 @@ impl GerberLayer {
         stepover_mm: f64,
         direction: f64,
         boundary: Option<&Path>,
-    ) -> Vec<Path> {
+    ) -> Vec<Vec<Path>> {
         if !outline_offset_mm.is_finite()
             || outline_offset_mm < 0.0
             || !offset_mm.is_finite()
@@ -691,28 +694,67 @@ impl GerberLayer {
         let boundary: Option<GeoMultiPolygon<f64>> = boundary
             .and_then(|path| geo_polygon(&path.points, &[]))
             .map(|polygon| GeoMultiPolygon::new(vec![polygon]));
-        // The boundary restricts which copper is machined. It is not a
-        // toolpath itself; isolation passes are generated around the clipped
-        // copper exactly as in FlatCAM.
-        let copper = if let Some(boundary) = &boundary {
-            let effective = if outline_offset_mm > 0.0 {
+        let mut all_passes = Vec::new();
+
+        if let Some(boundary) = &boundary
+            && direction > 0.0
+        {
+            // Outside algorithm:
+            // work_region = boundary inset by outline offset.
+            // For each pass: outside = work_region - copper.buffer(offset_i).
+            // Add all holes of outside. If copper reaches the work boundary,
+            // also add the outer contour and inset work_region for the next pass.
+            let mut work_region = if outline_offset_mm > 0.0 {
                 boundary.buffer(-outline_offset_mm)
             } else {
                 boundary.clone()
             };
-            if effective.0.is_empty() {
-                return Vec::new();
+            for pass in 0..passes {
+                let mut paths = Vec::new();
+                if work_region.0.is_empty() {
+                    all_passes.push(paths);
+                    continue;
+                }
+                let distance = offset_mm + f64::from(pass) * stepover_mm;
+                let copper_region = if distance.abs() < 1e-12 {
+                    copper.clone()
+                } else {
+                    copper.buffer(distance)
+                };
+                let outside = work_region.difference(&copper_region);
+                let intersects = boundaries_intersect(&work_region, &copper_region);
+                let outside_polygons = outside.0;
+                for (index, polygon) in outside_polygons.iter().enumerate() {
+                    for interior in polygon.interiors() {
+                        push_geo_ring(&mut paths, interior);
+                    }
+                    let Some(vertex) = polygon.exterior().0.first() else {
+                        continue;
+                    };
+                    let point = GeoPoint::new(vertex.x, vertex.y);
+                    let island = outside_polygons
+                        .iter()
+                        .enumerate()
+                        .any(|(other_index, other)| {
+                            other_index != index
+                                && other.interiors().iter().any(|hole| {
+                                    GeoPolygon::new(hole.clone(), vec![]).contains(&point)
+                                })
+                        });
+                    if intersects || island {
+                        push_geo_ring(&mut paths, polygon.exterior());
+                    }
+                }
+                if intersects && stepover_mm > 0.0 {
+                    work_region = work_region.buffer(-stepover_mm);
+                }
+                all_passes.push(paths);
             }
-            copper.intersection(&effective)
-        } else {
-            copper
-        };
-        if copper.0.is_empty() {
-            return Vec::new();
+            return all_passes;
         }
 
-        let mut paths = Vec::new();
         for pass in 0..passes {
+            let mut paths = Vec::new();
             let distance = direction * (offset_mm + f64::from(pass) * stepover_mm);
             let buffered = if distance.abs() < 1e-12 {
                 copper.clone()
@@ -725,10 +767,45 @@ impl GerberLayer {
                     push_geo_ring(&mut paths, interior);
                 }
             }
+            all_passes.push(paths);
         }
-
-        paths
+        all_passes
     }
+
+    /// Flattened isolation paths for all passes.
+    pub fn isolation_paths(
+        &self,
+        outline_offset_mm: f64,
+        offset_mm: f64,
+        passes: u32,
+        stepover_mm: f64,
+        direction: f64,
+        boundary: Option<&Path>,
+    ) -> Vec<Path> {
+        self.isolation_passes(
+            outline_offset_mm,
+            offset_mm,
+            passes,
+            stepover_mm,
+            direction,
+            boundary,
+        )
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+}
+
+fn boundaries_intersect(a: &GeoMultiPolygon<f64>, b: &GeoMultiPolygon<f64>) -> bool {
+    let boundary = |geometry: &GeoMultiPolygon<f64>| {
+        let mut lines = Vec::new();
+        for polygon in &geometry.0 {
+            lines.push(polygon.exterior().clone());
+            lines.extend(polygon.interiors().iter().cloned());
+        }
+        GeoMultiLineString::new(lines)
+    };
+    boundary(a).intersects(&boundary(b))
 }
 
 fn geo_line(path: &Path) -> Option<GeoLineString<f64>> {

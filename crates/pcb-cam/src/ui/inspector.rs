@@ -653,7 +653,7 @@ fn task_details(
                     });
                 ui.label(
                     RichText::new(
-                        "The boundary clips the copper source before the passes are built; it is not machined itself. Clearance passes are closed offsets around the clipped copper.",
+                        "Work region = boundary inset by Outline offset. Each pass emits holes and nested island contours of work-region minus copper clearance, plus the outer contour when copper reaches the boundary.",
                     )
                     .size(9.5)
                     .color(theme::TEXT_FAINT),
@@ -708,7 +708,7 @@ fn task_details(
                 );
                 ui.label(
                     RichText::new(
-                        "The boundary clips the copper source before passes are built. It is not machined itself; Offset is measured from the copper edge.",
+                        "Work region = boundary inset by Outline offset; passes are built as difference between work region and copper clearance.",
                     )
                     .size(9.5)
                     .color(theme::TEXT_FAINT),
