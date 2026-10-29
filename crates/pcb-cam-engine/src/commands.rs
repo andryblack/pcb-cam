@@ -509,11 +509,14 @@ pub(crate) fn operation_add_cutout(session: &mut Session, params: &Value) -> Res
         .cloned()
         .ok_or_else(|| "machining tool disappeared".to_owned())?;
 
+    let machining = *session.tool_library().machining();
     let mut cutout = CutoutOperation::new(layer_id, tool);
     cutout.offset_mm = tool_defaults.diameter_mm() * 0.5;
-    cutout.feed_mm_min = tool_defaults.feed_mm_min();
-    cutout.plunge_mm_min = tool_defaults.plunge_mm_min();
-    cutout.spindle_rpm = tool_defaults.spindle_rpm();
+    cutout.depth_mm = machining.mill_depth_mm;
+    cutout.retract_mm = machining.safe_z_mm;
+    cutout.feed_mm_min = machining.mill_feed_mm_min;
+    cutout.plunge_mm_min = machining.mill_plunge_mm_min;
+    cutout.spindle_rpm = machining.spindle_rpm;
     if let Some(side) = params.side.as_deref() {
         cutout.side = parse_side(side)?;
     }
@@ -614,12 +617,18 @@ pub(crate) fn operation_add_engrave(
 
     let tool = match params.tool {
         Some(id) => require_tool(session, id)?,
-        None => *session
-            .tool_library()
-            .first_of_kind(ToolKind::VBit)
-            .or_else(|| session.tool_library().first_of_kind(ToolKind::EndMill))
-            .as_ref()
-            .ok_or_else(|| "add a V-bit or end mill to the tool library first".to_owned())?,
+        None => {
+            let library = session.tool_library();
+            let preferred = library.machining().clearance_tool.filter(|id| {
+                library
+                    .tool(*id)
+                    .is_some_and(|tool| tool.kind().can_interpolate())
+            });
+            preferred
+                .or_else(|| library.first_of_kind(ToolKind::VBit))
+                .or_else(|| library.first_of_kind(ToolKind::EndMill))
+                .ok_or_else(|| "add a V-bit or end mill to the tool library first".to_owned())?
+        }
     };
     let default_name = format!("Clearance {layer_name}");
     let name = params.name.unwrap_or(default_name);
@@ -629,13 +638,16 @@ pub(crate) fn operation_add_engrave(
         .cloned()
         .ok_or_else(|| "machining tool disappeared".to_owned())?;
 
+    let machining = *session.tool_library().machining();
     let mut engrave = EngraveOperation::new(layer_id, tool);
     engrave.outline_offset_mm = tool_defaults.diameter_mm() * 0.5;
     engrave.offset_mm = tool_defaults.diameter_mm() * 0.5;
     engrave.stepover_mm = tool_defaults.diameter_mm();
-    engrave.feed_mm_min = tool_defaults.feed_mm_min();
-    engrave.plunge_mm_min = tool_defaults.plunge_mm_min();
-    engrave.spindle_rpm = tool_defaults.spindle_rpm();
+    engrave.depth_mm = machining.clearance_depth_mm;
+    engrave.retract_mm = machining.safe_z_mm;
+    engrave.feed_mm_min = machining.mill_feed_mm_min;
+    engrave.plunge_mm_min = machining.mill_plunge_mm_min;
+    engrave.spindle_rpm = machining.spindle_rpm;
     if let Some(side) = params.side.as_deref() {
         engrave.side = parse_engrave_side(side)?;
     }
@@ -822,16 +834,15 @@ pub(crate) fn operation_add_drill(session: &mut Session, params: &Value) -> Resu
     };
     let default_name = format!("Drill {layer_name}");
     let name = params.name.unwrap_or(default_name);
-    let tool_defaults = session
-        .tool_library()
-        .tool(tool)
-        .cloned()
-        .ok_or_else(|| "machining tool disappeared".to_owned())?;
 
+    let machining = *session.tool_library().machining();
     let mut drill = DrillOperation::new(layer_id, tool);
-    drill.feed_mm_min = tool_defaults.feed_mm_min();
-    drill.plunge_mm_min = tool_defaults.plunge_mm_min();
-    drill.spindle_rpm = tool_defaults.spindle_rpm();
+    drill.depth_mm = machining.drill_depth_mm;
+    drill.retract_mm = machining.safe_z_mm;
+    drill.feed_mm_min = machining.mill_feed_mm_min;
+    drill.plunge_mm_min = machining.drill_plunge_mm_min;
+    drill.stepdown_mm = machining.helical_stepdown_mm;
+    drill.spindle_rpm = machining.spindle_rpm;
     drill.source_tools = filter;
     if let Some(stepdown) = params.stepdown {
         drill.stepdown_mm = stepdown;
@@ -1165,19 +1176,18 @@ pub(crate) fn operation_add_hole_mill(
                 .ok_or_else(|| "the machining tool library is empty; add an end mill".to_owned())?
         }
     };
-    let tool_defaults = session
-        .tool_library()
-        .tool(tool)
-        .cloned()
-        .ok_or_else(|| "machining tool disappeared".to_owned())?;
     let default_name = format!("Hole milling {layer_name}");
     let name = params.name.unwrap_or(default_name);
 
+    let machining = *session.tool_library().machining();
     let mut mill = HoleMillOperation::new(layer_id, tool);
     mill.source_tools = filter;
-    mill.feed_mm_min = tool_defaults.feed_mm_min();
-    mill.plunge_mm_min = tool_defaults.plunge_mm_min();
-    mill.spindle_rpm = tool_defaults.spindle_rpm();
+    mill.depth_mm = machining.mill_depth_mm;
+    mill.retract_mm = machining.safe_z_mm;
+    mill.feed_mm_min = machining.mill_feed_mm_min;
+    mill.plunge_mm_min = machining.mill_plunge_mm_min;
+    mill.stepdown_mm = machining.helical_stepdown_mm;
+    mill.spindle_rpm = machining.spindle_rpm;
     if let Some(stepdown) = params.stepdown {
         mill.stepdown_mm = stepdown;
     }
@@ -1320,19 +1330,17 @@ pub(crate) fn operation_add_spot_drill(
             .as_ref()
             .ok_or_else(|| "add a Cone tool to the tool library first".to_owned())?,
     };
-    let tool_defaults = session
-        .tool_library()
-        .tool(tool)
-        .cloned()
-        .ok_or_else(|| "machining tool disappeared".to_owned())?;
     let default_name = format!("Spot drill {layer_name}");
     let name = params.name.unwrap_or(default_name);
 
+    let machining = *session.tool_library().machining();
     let mut spot = SpotDrillOperation::new(layer_id, tool);
     spot.source_tools = filter;
-    spot.feed_mm_min = tool_defaults.feed_mm_min();
-    spot.plunge_mm_min = tool_defaults.plunge_mm_min();
-    spot.spindle_rpm = tool_defaults.spindle_rpm();
+    spot.depth_mm = machining.spot_depth_mm;
+    spot.retract_mm = machining.safe_z_mm;
+    spot.feed_mm_min = machining.mill_feed_mm_min;
+    spot.plunge_mm_min = machining.drill_plunge_mm_min;
+    spot.spindle_rpm = machining.spindle_rpm;
     if let Some(depth) = params.depth {
         spot.depth_mm = depth;
     }
@@ -1632,6 +1640,65 @@ M30
         assert!(text.contains("X10.000 Y10.000"));
         assert!(text.contains("M30"));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn machining_defaults_seed_new_tasks() {
+        let mut session = Session::new();
+        let mut defaults = *session.tool_library().machining();
+        defaults.safe_z_mm = 7.5;
+        defaults.drill_depth_mm = 2.2;
+        defaults.drill_plunge_mm_min = 55.0;
+        defaults.mill_feed_mm_min = 444.0;
+        defaults.spindle_rpm = 9_000;
+        session.tool_library_mut().set_machining(defaults);
+
+        let import = session
+            .execute(
+                "file.import_excellon",
+                &json!({"content": EXCELLON, "name": "Drills"}),
+            )
+            .unwrap();
+        let layer = import["layer"].as_u64().unwrap();
+        let created = session
+            .execute("task.add_drill", &json!({"layer": layer}))
+            .unwrap();
+        let task = session
+            .project()
+            .task(OperationId::new(created["id"].as_u64().unwrap()))
+            .unwrap();
+        let OperationKind::Drill(drill) = task.kind() else {
+            panic!("expected drill");
+        };
+        assert_eq!(drill.retract_mm, 7.5);
+        assert_eq!(drill.depth_mm, 2.2);
+        assert_eq!(drill.plunge_mm_min, 55.0);
+        assert_eq!(drill.feed_mm_min, 444.0);
+        assert_eq!(drill.spindle_rpm, 9_000);
+    }
+
+    #[test]
+    fn clearance_uses_configured_default_tool() {
+        let mut session = Session::new();
+        let import = session
+            .execute(
+                "file.import_gerber",
+                &json!({"content": GERBER, "name": "Copper"}),
+            )
+            .unwrap();
+        let layer = import["layer"].as_u64().unwrap();
+        let v_bit = session
+            .tool_library()
+            .first_of_kind(ToolKind::VBit)
+            .unwrap();
+        let mut defaults = *session.tool_library().machining();
+        defaults.clearance_tool = Some(v_bit);
+        session.tool_library_mut().set_machining(defaults);
+
+        let created = session
+            .execute("task.add_engrave", &json!({"layer": layer}))
+            .unwrap();
+        assert_eq!(created["tool"], v_bit.value());
     }
 
     #[test]

@@ -35,9 +35,9 @@ enum InspectorAction {
 /// Draw the right inspector panel.
 pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
     let frame = Frame::new()
-        .fill(theme::PANEL)
+        .fill(theme::panel())
         .inner_margin(Margin::symmetric(12, 10))
-        .stroke(Stroke::new(1.0, theme::BORDER));
+        .stroke(Stroke::new(1.0, theme::border()));
 
     let mut action = None;
     app.sync_task_draft();
@@ -199,10 +199,10 @@ fn layer_details(ui: &mut Ui, app: &PbcCam, id: LayerId, action: &mut Option<Ins
                 RichText::new(layer.name())
                     .size(13.0)
                     .strong()
-                    .color(theme::TEXT),
+                    .color(theme::text()),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                widgets::pill(ui, layer.format().label(), theme::ACCENT);
+                widgets::pill(ui, layer.format().label(), theme::accent());
             });
         });
         ui.add_space(8.0);
@@ -231,7 +231,7 @@ fn layer_details(ui: &mut Ui, app: &PbcCam, id: LayerId, action: &mut Option<Ins
 
     if let Some(warning) = layer.warnings().first() {
         ui.add_space(8.0);
-        ui.label(RichText::new(warning).size(10.0).color(theme::COPPER));
+        ui.label(RichText::new(warning).size(10.0).color(theme::copper()));
     }
 
     ui.add_space(10.0);
@@ -248,7 +248,7 @@ fn layer_details(ui: &mut Ui, app: &PbcCam, id: LayerId, action: &mut Option<Ins
                 ui.label(
                     RichText::new("No drill-tool metadata in this layer.")
                         .size(10.0)
-                        .color(theme::TEXT_FAINT),
+                        .color(theme::text_faint()),
                 );
             } else {
                 for info in &source_tools {
@@ -257,7 +257,7 @@ fn layer_details(ui: &mut Ui, app: &PbcCam, id: LayerId, action: &mut Option<Ins
                             RichText::new(&info.label)
                                 .size(10.5)
                                 .monospace()
-                                .color(theme::TEXT_MUTED),
+                                .color(theme::text_muted()),
                         );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             let add = ui
@@ -269,7 +269,7 @@ fn layer_details(ui: &mut Ui, app: &PbcCam, id: LayerId, action: &mut Option<Ins
                             ui.label(
                                 RichText::new(format!("{} obj", info.count))
                                     .size(9.5)
-                                    .color(theme::TEXT_FAINT),
+                                    .color(theme::text_faint()),
                             );
                             if add.clicked() {
                                 *action = Some(InspectorAction::CreateTool(info.clone()));
@@ -282,7 +282,7 @@ fn layer_details(ui: &mut Ui, app: &PbcCam, id: LayerId, action: &mut Option<Ins
                         "Use + to add a matching machining tool. Source tools stay read-only and filter drilling/hole-milling tasks.",
                     )
                     .size(9.0)
-                    .color(theme::TEXT_FAINT),
+                    .color(theme::text_faint()),
                 );
             }
             ui.add_space(8.0);
@@ -332,10 +332,10 @@ fn tool_details(ui: &mut Ui, app: &PbcCam, id: ToolId, action: &mut Option<Inspe
                 RichText::new(tool.name())
                     .size(13.0)
                     .strong()
-                    .color(theme::TEXT),
+                    .color(theme::text()),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                widgets::pill(ui, tool.kind().label(), theme::ACCENT);
+                widgets::pill(ui, tool.kind().label(), theme::accent());
             });
         });
         ui.add_space(8.0);
@@ -407,7 +407,7 @@ fn task_details(
     widgets::card_frame().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Task").size(13.0).strong().color(theme::TEXT));
+            ui.label(RichText::new("Task").size(13.0).strong().color(theme::text()));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 widgets::pill(ui, task.kind_label(), task_color(task.kind()));
             });
@@ -419,7 +419,7 @@ fn task_details(
         }
 
         ui.add_space(4.0);
-        ui.label(RichText::new("Name").size(10.5).color(theme::TEXT_MUTED));
+        ui.label(RichText::new("Name").size(10.5).color(theme::text_muted()));
         let name = ui.add(
             egui::TextEdit::singleline(&mut draft.name)
                 .desired_width(f32::INFINITY)
@@ -436,7 +436,7 @@ fn task_details(
         ui.label(
             RichText::new("Machining tool")
                 .size(10.5)
-                .color(theme::TEXT_MUTED),
+                .color(theme::text_muted()),
         );
         let tool_changed = tool_selector(ui, &tools, &mut draft.tool);
         if tool_changed {
@@ -453,7 +453,7 @@ fn task_details(
                 egui::Label::new(
                     RichText::new(format!("Warning: {warning}"))
                         .size(10.0)
-                        .color(theme::COPPER),
+                        .color(theme::copper()),
                 )
                 .wrap(),
             );
@@ -520,7 +520,7 @@ fn task_details(
                 ui.label(
                     RichText::new("Slots are ignored: spot drilling uses hole centres.")
                         .size(9.5)
-                        .color(theme::TEXT_FAINT),
+                        .color(theme::text_faint()),
                 );
 
                 ui.add_space(8.0);
@@ -562,7 +562,7 @@ fn task_details(
                 ui.label(
                     RichText::new("Holes larger than the tool are helically milled; slots are routed.")
                         .size(9.5)
-                        .color(theme::TEXT_FAINT),
+                        .color(theme::text_faint()),
                 );
 
                 ui.add_space(8.0);
@@ -681,7 +681,7 @@ fn task_details(
                         "Work region = boundary inset by Outline offset. Each pass emits holes and nested island contours of work-region minus copper clearance, plus the outer contour when copper reaches the boundary.",
                     )
                     .size(9.5)
-                    .color(theme::TEXT_FAINT),
+                    .color(theme::text_faint()),
                 );
                 ui.add_space(3.0);
                 commit |= inline_offset(
@@ -695,7 +695,7 @@ fn task_details(
                 ui.label(
                     RichText::new("Positive values shrink the boundary inward. New tasks default to half the tool width.")
                         .size(9.0)
-                        .color(theme::TEXT_FAINT),
+                        .color(theme::text_faint()),
                 );
 
                 ui.add_space(8.0);
@@ -736,7 +736,7 @@ fn task_details(
                         "Work region = boundary inset by Outline offset; passes are built as difference between work region and copper clearance.",
                     )
                     .size(9.5)
-                    .color(theme::TEXT_FAINT),
+                    .color(theme::text_faint()),
                 );
 
                 ui.add_space(8.0);
@@ -832,7 +832,7 @@ fn source_hole_selector(
         ui.label(
             RichText::new("The source layer has no tools.")
                 .size(10.0)
-                .color(theme::TEXT_FAINT),
+                .color(theme::text_faint()),
         );
         return commit;
     }
@@ -859,7 +859,7 @@ fn source_hole_selector(
         ui.label(
             RichText::new("Select at least one source tool.")
                 .size(10.0)
-                .color(theme::ERROR),
+                .color(theme::error()),
         );
     }
     commit
@@ -903,7 +903,7 @@ fn inline_offset(
 ) -> bool {
     let mut commit = false;
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).size(10.5).color(theme::TEXT_MUTED));
+        ui.label(RichText::new(label).size(10.5).color(theme::text_muted()));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let reset = ui
                 .add(Button::new(RichText::new("↺").size(11.0)).min_size(vec2(18.0, 16.0)))
@@ -938,7 +938,7 @@ fn inline_f64(
 ) -> bool {
     let mut commit = false;
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).size(10.5).color(theme::TEXT_MUTED));
+        ui.label(RichText::new(label).size(10.5).color(theme::text_muted()));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let response = ui.add(
                 egui::DragValue::new(value)
@@ -967,7 +967,7 @@ fn inline_u32(
 ) -> bool {
     let mut commit = false;
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).size(10.5).color(theme::TEXT_MUTED));
+        ui.label(RichText::new(label).size(10.5).color(theme::text_muted()));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let response = ui.add(
                 egui::DragValue::new(value)
@@ -1016,11 +1016,11 @@ fn filtered_counts(
 
 fn task_color(kind: &OperationKind) -> egui::Color32 {
     match kind {
-        OperationKind::Drill(_) => theme::COPPER,
-        OperationKind::SpotDrill(_) => theme::COPPER_BRIGHT,
-        OperationKind::HoleMill(_) => theme::ACCENT,
-        OperationKind::Cutout(_) => theme::ACCENT,
-        OperationKind::Engrave(_) => theme::COPPER_BRIGHT,
+        OperationKind::Drill(_) => theme::copper(),
+        OperationKind::SpotDrill(_) => theme::copper_bright(),
+        OperationKind::HoleMill(_) => theme::accent(),
+        OperationKind::Cutout(_) => theme::accent(),
+        OperationKind::Engrave(_) => theme::copper_bright(),
     }
 }
 
@@ -1032,7 +1032,7 @@ fn view_settings(ui: &mut Ui, app: &mut PbcCam, action: &mut Option<InspectorAct
 
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Units").size(11.0).color(theme::TEXT_MUTED));
+        ui.label(RichText::new("Units").size(11.0).color(theme::text_muted()));
         let current = app.project().units();
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui
@@ -1074,14 +1074,14 @@ fn view_settings(ui: &mut Ui, app: &mut PbcCam, action: &mut Option<InspectorAct
 
 fn field_value(ui: &mut Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).size(11.0).color(theme::TEXT_MUTED));
+        ui.label(RichText::new(label).size(11.0).color(theme::text_muted()));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.add(
                 egui::Label::new(
                     RichText::new(value)
                         .size(11.0)
                         .monospace()
-                        .color(theme::TEXT),
+                        .color(theme::text()),
                 )
                 .truncate(),
             );

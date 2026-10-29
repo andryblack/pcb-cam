@@ -14,16 +14,16 @@ pub(crate) fn paint_mark(painter: &Painter, rect: Rect) {
     let point = |x: f32, y: f32| rect.min + vec2(x * scale, y * scale);
 
     let radius = (12.0 * scale).round().clamp(2.0, 255.0) as u8;
-    painter.rect_filled(rect, CornerRadius::same(radius), theme::APP_BG);
+    painter.rect_filled(rect, CornerRadius::same(radius), theme::app_bg());
     painter.rect_stroke(
         rect,
         CornerRadius::same(radius),
-        Stroke::new((1.0 * scale).max(0.5), theme::COPPER_DIM),
+        Stroke::new((1.0 * scale).max(0.5), theme::copper_dim()),
         StrokeKind::Inside,
     );
 
-    let trace = Stroke::new((2.2 * scale).max(0.8), theme::COPPER);
-    let glyph = Stroke::new((3.9 * scale).max(1.2), theme::COPPER_BRIGHT);
+    let trace = Stroke::new((2.2 * scale).max(0.8), theme::copper());
+    let glyph = Stroke::new((3.9 * scale).max(1.2), theme::copper_bright());
 
     // Two copper traces entering the "P".
     painter.line_segment([point(7.0, 22.0), point(21.0, 22.0)], trace);
@@ -39,11 +39,11 @@ pub(crate) fn paint_mark(painter: &Painter, rect: Rect) {
 
     // Through-hole pads.
     for (x, y) in [(7.0, 22.0), (57.0, 42.0)] {
-        painter.circle_filled(point(x, y), 3.4 * scale, theme::APP_BG);
+        painter.circle_filled(point(x, y), 3.4 * scale, theme::app_bg());
         painter.circle_stroke(
             point(x, y),
             3.4 * scale,
-            Stroke::new((1.4 * scale).max(0.7), theme::COPPER),
+            Stroke::new((1.4 * scale).max(0.7), theme::copper()),
         );
     }
 }
@@ -61,7 +61,7 @@ pub(crate) fn section_label(ui: &mut Ui, text: &str) {
         RichText::new(text.to_ascii_uppercase())
             .size(9.5)
             .strong()
-            .color(theme::TEXT_MUTED),
+            .color(theme::text_muted()),
     );
 }
 
@@ -72,7 +72,7 @@ pub(crate) fn panel_header(ui: &mut Ui, title: &str, open: &mut bool) {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let button = ui
                 .add(
-                    Button::new(RichText::new("×").size(14.0).color(theme::TEXT_MUTED))
+                    Button::new(RichText::new("×").size(14.0).color(theme::text_muted()))
                         .frame(false),
                 )
                 .on_hover_text("Hide panel");
@@ -102,38 +102,38 @@ pub(crate) fn pill(ui: &mut Ui, text: &str, color: Color32) {
 /// Raised card used for project summaries and dialogs.
 pub(crate) fn card_frame() -> Frame {
     Frame::new()
-        .fill(theme::PANEL_RAISED)
+        .fill(theme::panel_raised())
         .corner_radius(8)
         .inner_margin(Margin::same(10))
-        .stroke(Stroke::new(1.0, theme::BORDER))
+        .stroke(Stroke::new(1.0, theme::border()))
 }
 
 /// A quiet card used for empty states.
 pub(crate) fn hint_card(ui: &mut Ui, title: &str, body: &str) {
     Frame::new()
-        .fill(theme::CANVAS)
+        .fill(theme::canvas())
         .corner_radius(6)
         .inner_margin(Margin::same(10))
-        .stroke(Stroke::new(1.0, theme::BORDER))
+        .stroke(Stroke::new(1.0, theme::border()))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(title).size(12.0).color(theme::TEXT_MUTED));
+            ui.label(RichText::new(title).size(12.0).color(theme::text_muted()));
             ui.add_space(2.0);
-            ui.label(RichText::new(body).size(11.0).color(theme::TEXT_FAINT));
+            ui.label(RichText::new(body).size(11.0).color(theme::text_faint()));
         });
 }
 
 /// Read-only label/value row.
 pub(crate) fn field_row(ui: &mut Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).size(11.0).color(theme::TEXT_MUTED));
+        ui.label(RichText::new(label).size(11.0).color(theme::text_muted()));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.add(
                 egui::Label::new(
                     RichText::new(value)
                         .size(11.0)
                         .monospace()
-                        .color(theme::TEXT),
+                        .color(theme::text()),
                 )
                 .truncate(),
             );
@@ -147,6 +147,6 @@ pub(crate) fn hairline(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(vec2(width, 1.0), Sense::hover());
     ui.painter().line_segment(
         [pos2(rect.left(), rect.center().y), rect.right_center()],
-        Stroke::new(1.0, theme::BORDER),
+        Stroke::new(1.0, theme::border()),
     );
 }

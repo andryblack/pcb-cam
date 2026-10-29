@@ -28,7 +28,7 @@ pub use operation::{
 };
 pub use persist::{LoadedProject, load_project, save_project};
 pub use project::{Project, UNTITLED_PROJECT};
-pub use tool::{Tool, ToolId, ToolKind, ToolLibrary};
+pub use tool::{MachiningDefaults, Tool, ToolId, ToolKind, ToolLibrary};
 pub use units::Unit;
 
 pub use formats::{ParseError, parse_excellon, parse_gerber};

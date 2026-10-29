@@ -170,11 +170,89 @@ impl Tool {
     }
 }
 
+/// Defaults used when creating new machining tasks and travel moves.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MachiningDefaults {
+    /// XY travel/rapid feed in mm/min.
+    pub rapid_feed_mm_min: f64,
+    /// Safe Z clearance height in mm.
+    pub safe_z_mm: f64,
+    /// Plunge rate for drilling and spot drilling.
+    pub drill_plunge_mm_min: f64,
+    /// Default drilling depth.
+    pub drill_depth_mm: f64,
+    /// Default spot-drill depth.
+    pub spot_depth_mm: f64,
+    /// XY feed for milling and routing.
+    pub mill_feed_mm_min: f64,
+    /// Plunge rate for milling and routing.
+    pub mill_plunge_mm_min: f64,
+    /// Default edge-cut and hole-milling depth.
+    pub mill_depth_mm: f64,
+    /// Default clearance depth.
+    pub clearance_depth_mm: f64,
+    /// Default spindle speed.
+    pub spindle_rpm: u32,
+    /// Default helical step-down.
+    pub helical_stepdown_mm: f64,
+    /// Machining tool preselected for new clearance tasks.
+    pub clearance_tool: Option<ToolId>,
+}
+
+impl Default for MachiningDefaults {
+    fn default() -> Self {
+        Self {
+            rapid_feed_mm_min: 5_000.0,
+            safe_z_mm: 3.0,
+            drill_plunge_mm_min: 120.0,
+            drill_depth_mm: 1.8,
+            spot_depth_mm: 0.5,
+            mill_feed_mm_min: 300.0,
+            mill_plunge_mm_min: 120.0,
+            mill_depth_mm: 1.8,
+            clearance_depth_mm: 0.2,
+            spindle_rpm: 12_000,
+            helical_stepdown_mm: 0.5,
+            clearance_tool: None,
+        }
+    }
+}
+
+impl MachiningDefaults {
+    /// Keep persisted values in a safe, positive range.
+    pub fn sanitize(&mut self) {
+        if !self.rapid_feed_mm_min.is_finite() || self.rapid_feed_mm_min < 0.0 {
+            self.rapid_feed_mm_min = 5_000.0;
+        }
+        for value in [
+            &mut self.drill_plunge_mm_min,
+            &mut self.drill_depth_mm,
+            &mut self.spot_depth_mm,
+            &mut self.mill_feed_mm_min,
+            &mut self.mill_plunge_mm_min,
+            &mut self.mill_depth_mm,
+            &mut self.clearance_depth_mm,
+            &mut self.helical_stepdown_mm,
+        ] {
+            if !value.is_finite() || *value <= 0.0 {
+                *value = 1.0;
+            }
+        }
+        if !self.safe_z_mm.is_finite() || self.safe_z_mm < 0.0 {
+            self.safe_z_mm = 3.0;
+        }
+        self.spindle_rpm = self.spindle_rpm.min(60_000);
+    }
+}
+
 /// The user's machining tool library. It is shared by all projects.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolLibrary {
     tools: Vec<Tool>,
     next_id: u64,
+    #[serde(default)]
+    machining: MachiningDefaults,
 }
 
 impl Default for ToolLibrary {
@@ -182,6 +260,7 @@ impl Default for ToolLibrary {
         let mut library = Self {
             tools: Vec::new(),
             next_id: 1,
+            machining: MachiningDefaults::default(),
         };
         library.add_default("Cone 6.00 mm", ToolKind::Cone, 6.00, 200.0, 80.0, 12_000);
         library.add_default("Drill 0.30 mm", ToolKind::Drill, 0.30, 80.0, 50.0, 20_000);
@@ -242,6 +321,17 @@ impl ToolLibrary {
         self.tools.iter_mut().find(|tool| tool.id() == id)
     }
 
+    /// Default machining parameters.
+    pub const fn machining(&self) -> &MachiningDefaults {
+        &self.machining
+    }
+
+    /// Replace default machining parameters.
+    pub fn set_machining(&mut self, mut defaults: MachiningDefaults) {
+        defaults.sanitize();
+        self.machining = defaults;
+    }
+
     /// Add a tool and return its new id.
     pub fn add(
         &mut self,
@@ -270,6 +360,9 @@ impl ToolLibrary {
     pub fn remove(&mut self, id: ToolId) -> bool {
         let before = self.tools.len();
         self.tools.retain(|tool| tool.id() != id);
+        if self.machining.clearance_tool == Some(id) {
+            self.machining.clearance_tool = None;
+        }
         self.tools.len() != before
     }
 

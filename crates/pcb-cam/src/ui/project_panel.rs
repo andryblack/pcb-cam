@@ -12,9 +12,9 @@ use pcb_cam_core::LayerGeometry;
 /// Draw the left browser panel.
 pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
     let frame = Frame::new()
-        .fill(theme::PANEL)
+        .fill(theme::panel())
         .inner_margin(Margin::symmetric(12, 10))
-        .stroke(Stroke::new(1.0, theme::BORDER));
+        .stroke(Stroke::new(1.0, theme::border()));
 
     egui::Panel::left("project_panel")
         .default_size(268.0)
@@ -74,7 +74,7 @@ fn project_card(ui: &mut Ui, app: &PbcCam) {
                     RichText::new(app.project().name())
                         .size(14.0)
                         .strong()
-                        .color(theme::TEXT),
+                        .color(theme::text()),
                 );
                 ui.label(
                     RichText::new(format!(
@@ -87,7 +87,7 @@ fn project_card(ui: &mut Ui, app: &PbcCam) {
                         }
                     ))
                     .size(10.5)
-                    .color(theme::TEXT_MUTED),
+                    .color(theme::text_muted()),
                 );
             });
         });
@@ -114,9 +114,14 @@ fn stat(ui: &mut Ui, label: &str, value: &str) {
             RichText::new(label)
                 .size(8.8)
                 .strong()
-                .color(theme::TEXT_FAINT),
+                .color(theme::text_faint()),
         );
-        ui.label(RichText::new(value).size(12.0).strong().color(theme::TEXT));
+        ui.label(
+            RichText::new(value)
+                .size(12.0)
+                .strong()
+                .color(theme::text()),
+        );
     });
 }
 
@@ -124,7 +129,7 @@ fn section_header(ui: &mut Ui, title: &str, count: usize) {
     ui.horizontal(|ui| {
         widgets::section_label(ui, title);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            widgets::pill(ui, &count.to_string(), theme::TEXT_MUTED);
+            widgets::pill(ui, &count.to_string(), theme::text_muted());
         });
     });
 }
@@ -162,14 +167,14 @@ fn layer_list(ui: &mut Ui, app: &mut PbcCam) {
                 if visible {
                     color(layer.color())
                 } else {
-                    theme::TEXT_FAINT
+                    theme::text_faint()
                 },
             );
 
             let name = RichText::new(layer.name()).size(12.0).color(if selected {
-                theme::COPPER_BRIGHT
+                theme::copper_bright()
             } else {
-                theme::TEXT
+                theme::text()
             });
             if ui.selectable_label(selected, name).clicked() {
                 selection = Some(Selection::Layer(layer.id()));
@@ -179,13 +184,13 @@ fn layer_list(ui: &mut Ui, app: &mut PbcCam) {
                 ui.label(
                     RichText::new(layer.format().label())
                         .size(9.0)
-                        .color(theme::TEXT_FAINT),
+                        .color(theme::text_faint()),
                 );
                 ui.label(
                     RichText::new(layer.object_count().to_string())
                         .size(9.5)
                         .monospace()
-                        .color(theme::TEXT_MUTED),
+                        .color(theme::text_muted()),
                 );
             });
         });
@@ -254,7 +259,7 @@ fn source_tools_section(ui: &mut Ui, app: &mut PbcCam) {
                 RichText::new(&tool.label)
                     .size(10.5)
                     .monospace()
-                    .color(theme::TEXT_MUTED),
+                    .color(theme::text_muted()),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let add = ui
@@ -265,7 +270,7 @@ fn source_tools_section(ui: &mut Ui, app: &mut PbcCam) {
                 ui.label(
                     RichText::new(format!("{} obj", tool.count))
                         .size(9.5)
-                        .color(theme::TEXT_FAINT),
+                        .color(theme::text_faint()),
                 );
                 if add.clicked() {
                     app.add_tool_from_source(tool);
@@ -278,7 +283,7 @@ fn source_tools_section(ui: &mut Ui, app: &mut PbcCam) {
             "Read-only. Use + to add a matching machining tool; these entries also filter drilling, hole-milling and spot-drilling tasks.",
         )
         .size(9.0)
-        .color(theme::TEXT_FAINT),
+        .color(theme::text_faint()),
     );
 }
 
@@ -309,11 +314,11 @@ fn tool_list(ui: &mut Ui, app: &mut PbcCam) {
         ui.horizontal(|ui| {
             let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(7.0), Sense::hover());
             ui.painter()
-                .circle_filled(dot_rect.center(), 3.0, theme::ACCENT);
+                .circle_filled(dot_rect.center(), 3.0, theme::accent());
             let name = RichText::new(tool.name()).size(11.5).color(if selected {
-                theme::COPPER_BRIGHT
+                theme::copper_bright()
             } else {
-                theme::TEXT
+                theme::text()
             });
             if ui.selectable_label(selected, name).clicked() {
                 selection = Some(Selection::Tool(tool.id()));
@@ -323,7 +328,7 @@ fn tool_list(ui: &mut Ui, app: &mut PbcCam) {
                     RichText::new(format!("Ø {:.2}", tool.diameter_mm()))
                         .size(9.5)
                         .monospace()
-                        .color(theme::TEXT_MUTED),
+                        .color(theme::text_muted()),
                 );
             });
         });
@@ -341,14 +346,14 @@ fn output_section(ui: &mut Ui, app: &mut PbcCam) {
             RichText::new("NC program")
                 .size(12.0)
                 .strong()
-                .color(theme::TEXT),
+                .color(theme::text()),
         );
         ui.add_space(2.0);
         if enabled == 0 {
             ui.label(
                 RichText::new("Add and enable a task to generate a combined G-code program.")
                     .size(10.5)
-                    .color(theme::TEXT_FAINT),
+                    .color(theme::text_faint()),
             );
         } else {
             ui.label(
@@ -357,7 +362,7 @@ fn output_section(ui: &mut Ui, app: &mut PbcCam) {
                     if enabled == 1 { "" } else { "s" }
                 ))
                 .size(10.5)
-                .color(theme::TEXT_MUTED),
+                .color(theme::text_muted()),
             );
             ui.add_space(6.0);
             let export = ui.add_sized(

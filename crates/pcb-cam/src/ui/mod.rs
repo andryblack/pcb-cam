@@ -3,6 +3,7 @@
 pub(crate) mod inspector;
 pub(crate) mod menu;
 pub(crate) mod project_panel;
+pub(crate) mod settings;
 pub(crate) mod status_bar;
 pub(crate) mod timeline;
 pub(crate) mod toolbar;

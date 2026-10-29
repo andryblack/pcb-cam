@@ -8,9 +8,9 @@ use crate::theme;
 /// Draw the native-looking menu bar at the top of the window.
 pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
     let frame = Frame::new()
-        .fill(theme::APP_BG)
+        .fill(theme::app_bg())
         .inner_margin(Margin::symmetric(10, 3))
-        .stroke(Stroke::new(1.0, theme::BORDER));
+        .stroke(Stroke::new(1.0, theme::border()));
 
     egui::Panel::top("menu_bar")
         .exact_size(31.0)
@@ -243,6 +243,14 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         app.fit_view();
                         ui.close();
                     }
+                    ui.separator();
+                    if ui
+                        .add(Button::new("Settings…").shortcut_text(app::SHORTCUT_SETTINGS))
+                        .clicked()
+                    {
+                        app.settings_open = true;
+                        ui.close();
+                    }
                 });
 
                 ui.menu_button("Help", |ui| {
@@ -260,7 +268,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     ui.label(
                         RichText::new(format!("v{}  /  Milestone 4", app::VERSION))
                             .size(10.0)
-                            .color(theme::TEXT_FAINT),
+                            .color(theme::text_faint()),
                     );
                 });
             });

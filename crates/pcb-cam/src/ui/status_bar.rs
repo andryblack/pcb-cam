@@ -9,9 +9,9 @@ use crate::view;
 /// Draw the status bar at the bottom of the window.
 pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
     let frame = Frame::new()
-        .fill(theme::APP_BG)
+        .fill(theme::app_bg())
         .inner_margin(Margin::symmetric(12, 3))
-        .stroke(Stroke::new(1.0, theme::BORDER));
+        .stroke(Stroke::new(1.0, theme::border()));
 
     egui::Panel::bottom("status_bar")
         .exact_size(28.0)
@@ -24,9 +24,9 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     dot_rect.center(),
                     3.0,
                     if app.status_error {
-                        theme::ERROR
+                        theme::error()
                     } else {
-                        theme::ACCENT
+                        theme::accent()
                     },
                 );
 
@@ -34,9 +34,9 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     RichText::new(&app.status)
                         .size(10.5)
                         .color(if app.status_error {
-                            theme::ERROR
+                            theme::error()
                         } else {
-                            theme::TEXT_MUTED
+                            theme::text_muted()
                         }),
                 );
                 ui.separator();
@@ -52,7 +52,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         }
                     ))
                     .size(10.0)
-                    .color(theme::TEXT_FAINT),
+                    .color(theme::text_faint()),
                 );
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -60,21 +60,21 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         RichText::new(format!("Zoom {:.0}%", app.view.zoom_percent()))
                             .size(10.0)
                             .monospace()
-                            .color(theme::TEXT_MUTED),
+                            .color(theme::text_muted()),
                     );
                     ui.separator();
                     ui.label(
                         RichText::new(app.project().units().symbol().to_ascii_uppercase())
                             .size(10.0)
                             .monospace()
-                            .color(theme::COPPER),
+                            .color(theme::copper()),
                     );
                     ui.separator();
                     ui.label(
                         RichText::new(cursor_position(app))
                             .size(10.0)
                             .monospace()
-                            .color(theme::TEXT_MUTED),
+                            .color(theme::text_muted()),
                     );
                 });
             });

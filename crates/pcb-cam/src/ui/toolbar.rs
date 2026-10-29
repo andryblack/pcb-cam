@@ -10,9 +10,9 @@ use crate::ui::widgets;
 /// Draw the workspace toolbar.
 pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
     let frame = Frame::new()
-        .fill(theme::PANEL)
+        .fill(theme::panel())
         .inner_margin(Margin::symmetric(12, 7))
-        .stroke(Stroke::new(1.0, theme::BORDER));
+        .stroke(Stroke::new(1.0, theme::border()));
 
     egui::Panel::top("toolbar")
         .exact_size(50.0)
@@ -25,12 +25,12 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     RichText::new("PCB-CAM")
                         .size(14.5)
                         .strong()
-                        .color(theme::TEXT),
+                        .color(theme::text()),
                 );
                 ui.label(
                     RichText::new(format!("v{}", crate::app::VERSION))
                         .size(9.5)
-                        .color(theme::TEXT_FAINT),
+                        .color(theme::text_faint()),
                 );
 
                 ui.add_space(2.0);
@@ -40,16 +40,16 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     RichText::new("PROJECT")
                         .size(9.5)
                         .strong()
-                        .color(theme::TEXT_FAINT),
+                        .color(theme::text_faint()),
                 );
                 ui.label(
                     RichText::new(app.project().name())
                         .size(13.0)
                         .strong()
-                        .color(theme::TEXT),
+                        .color(theme::text()),
                 );
                 if app.session.dirty() {
-                    ui.label(RichText::new("*").size(12.0).color(theme::COPPER));
+                    ui.label(RichText::new("*").size(12.0).color(theme::copper()));
                 }
                 ui.label(
                     RichText::new(format!(
@@ -58,7 +58,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         task_count_label(app.project().tasks().len())
                     ))
                     .size(10.5)
-                    .color(theme::TEXT_MUTED),
+                    .color(theme::text_muted()),
                 );
 
                 ui.add_space(4.0);
@@ -166,10 +166,10 @@ fn unit_switch(ui: &mut Ui, app: &mut PbcCam) {
     let mut picked = current;
 
     Frame::new()
-        .fill(theme::CANVAS)
+        .fill(theme::canvas())
         .corner_radius(5)
         .inner_margin(Margin::same(2))
-        .stroke(Stroke::new(1.0, theme::BORDER))
+        .stroke(Stroke::new(1.0, theme::border()))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
             ui.horizontal(|ui| {

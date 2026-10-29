@@ -9,9 +9,9 @@ use crate::ui::widgets;
 /// Draw the task timeline above the status bar.
 pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
     let frame = Frame::new()
-        .fill(theme::PANEL)
+        .fill(theme::panel())
         .inner_margin(Margin::symmetric(12, 7))
-        .stroke(Stroke::new(1.0, theme::BORDER));
+        .stroke(Stroke::new(1.0, theme::border()));
 
     egui::Panel::bottom("task_timeline")
         .exact_size(84.0)
@@ -23,13 +23,13 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                 widgets::pill(
                     ui,
                     &app.project().tasks().len().to_string(),
-                    theme::TEXT_MUTED,
+                    theme::text_muted(),
                 );
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new("Ordered drilling, hole-milling, spot-drilling, edge-cut and clearance steps")
                         .size(10.0)
-                        .color(theme::TEXT_FAINT),
+                        .color(theme::text_faint()),
                 );
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -99,7 +99,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                             "No tasks yet — import Gerber/Excellon data, then add a drilling, edge-cut or clearance task.",
                         )
                         .size(11.0)
-                        .color(theme::TEXT_FAINT),
+                        .color(theme::text_faint()),
                     );
                 });
                 return;
@@ -115,20 +115,20 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                             let color = if task.enabled() {
                                 task_color(task.kind())
                             } else {
-                                theme::TEXT_FAINT
+                                theme::text_faint()
                             };
                             Frame::new()
                                 .fill(if selected {
-                                    theme::SURFACE_ACTIVE
+                                    theme::surface_active()
                                 } else {
-                                    theme::CANVAS
+                                    theme::canvas()
                                 })
                                 .stroke(Stroke::new(
                                     1.0,
                                     if selected {
-                                        theme::COPPER_DIM
+                                        theme::copper_dim()
                                     } else {
-                                        theme::BORDER
+                                        theme::border()
                                     },
                                 ))
                                 .corner_radius(6)
@@ -149,9 +149,9 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                                         .size(11.5)
                                         .strong()
                                         .color(if selected {
-                                            theme::COPPER_BRIGHT
+                                            theme::copper_bright()
                                         } else {
-                                            theme::TEXT
+                                            theme::text()
                                         });
                                         if ui
                                             .add(Button::new(title).frame(false))
@@ -165,7 +165,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                                         egui::Label::new(
                                             RichText::new(task_subtitle(app, task))
                                                 .size(9.5)
-                                                .color(theme::TEXT_MUTED),
+                                                .color(theme::text_muted()),
                                         )
                                         .truncate(),
                                     );
@@ -189,11 +189,11 @@ fn tool_label(app: &PbcCam, task: &pcb_cam_core::Task) -> String {
 
 fn task_color(kind: &pcb_cam_core::OperationKind) -> egui::Color32 {
     match kind {
-        pcb_cam_core::OperationKind::Drill(_) => theme::COPPER,
-        pcb_cam_core::OperationKind::SpotDrill(_) => theme::COPPER_BRIGHT,
-        pcb_cam_core::OperationKind::HoleMill(_) => theme::ACCENT,
-        pcb_cam_core::OperationKind::Cutout(_) => theme::ACCENT,
-        pcb_cam_core::OperationKind::Engrave(_) => theme::COPPER_BRIGHT,
+        pcb_cam_core::OperationKind::Drill(_) => theme::copper(),
+        pcb_cam_core::OperationKind::SpotDrill(_) => theme::copper_bright(),
+        pcb_cam_core::OperationKind::HoleMill(_) => theme::accent(),
+        pcb_cam_core::OperationKind::Cutout(_) => theme::accent(),
+        pcb_cam_core::OperationKind::Engrave(_) => theme::copper_bright(),
     }
 }
 

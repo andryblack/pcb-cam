@@ -104,6 +104,7 @@ struct ProgramBuilder<'a> {
     helical_hole_count: usize,
     cut_length_mm: f64,
     origin: Point,
+    rapid_feed_mm_min: f64,
 }
 
 impl<'a> ProgramBuilder<'a> {
@@ -117,7 +118,14 @@ impl<'a> ProgramBuilder<'a> {
         let _ = writeln!(text, "(Project: {})", project.name());
         let _ = writeln!(text, "(Tasks: {task_count})");
         let origin = project.gcode_origin();
+        let machining = *library.machining();
         let _ = writeln!(text, "(G-code 0: X{:.3} Y{:.3} mm)", origin.x, origin.y);
+        let _ = writeln!(
+            text,
+            "(Travel feed: {:.0} mm/min)",
+            machining.rapid_feed_mm_min
+        );
+        let _ = writeln!(text, "(Safe Z: {:.3} mm)", machining.safe_z_mm);
         let _ = writeln!(text, "G21");
         let _ = writeln!(text, "G90");
         let _ = writeln!(text, "G17");
@@ -131,7 +139,7 @@ impl<'a> ProgramBuilder<'a> {
             tools: Vec::new(),
             current_tool: None,
             current_spindle: None,
-            last_safe_z: 3.0,
+            last_safe_z: machining.safe_z_mm,
             task_count: 0,
             hole_count: 0,
             slot_count: 0,
@@ -139,6 +147,19 @@ impl<'a> ProgramBuilder<'a> {
             helical_hole_count: 0,
             cut_length_mm: 0.0,
             origin,
+            rapid_feed_mm_min: machining.rapid_feed_mm_min,
+        }
+    }
+
+    fn travel_xy(&mut self, x: f64, y: f64) {
+        if self.rapid_feed_mm_min > 0.0 {
+            let _ = writeln!(
+                self.text,
+                "G01 X{x:.3} Y{y:.3} F{:.1}",
+                self.rapid_feed_mm_min
+            );
+        } else {
+            let _ = writeln!(self.text, "G00 X{x:.3} Y{y:.3}");
         }
     }
 
@@ -227,12 +248,9 @@ impl<'a> ProgramBuilder<'a> {
                     hole.diameter_mm
                 ));
             }
-            let _ = writeln!(
-                self.text,
-                "G00 X{:.3} Y{:.3}",
-                self.gx(hole.position.x),
-                self.gy(hole.position.y)
-            );
+            let x = self.gx(hole.position.x);
+            let y = self.gy(hole.position.y);
+            self.travel_xy(x, y);
             let _ = writeln!(
                 self.text,
                 "G01 Z-{:.3} F{:.1}",
@@ -381,12 +399,9 @@ impl<'a> ProgramBuilder<'a> {
         let _ = writeln!(self.text, "G00 Z{:.3}", spot.retract_mm);
 
         for hole in selected_holes {
-            let _ = writeln!(
-                self.text,
-                "G00 X{:.3} Y{:.3}",
-                self.gx(hole.position.x),
-                self.gy(hole.position.y)
-            );
+            let x = self.gx(hole.position.x);
+            let y = self.gy(hole.position.y);
+            self.travel_xy(x, y);
             let _ = writeln!(
                 self.text,
                 "G01 Z-{:.3} F{:.1}",
@@ -425,12 +440,9 @@ impl<'a> ProgramBuilder<'a> {
             return Ok(());
         }
 
-        let _ = writeln!(
-            self.text,
-            "G00 X{:.3} Y{:.3}",
-            self.gx(hole.position.x),
-            self.gy(hole.position.y)
-        );
+        let x = self.gx(hole.position.x);
+        let y = self.gy(hole.position.y);
+        self.travel_xy(x, y);
         let _ = writeln!(
             self.text,
             "G01 Z-{:.3} F{:.1}",
@@ -466,7 +478,7 @@ impl<'a> ProgramBuilder<'a> {
             "(Helical mill Ø{:.3} hole with Ø{:.3} tool, {} passes)",
             hole.diameter_mm, tool_diameter_mm, passes as u32
         );
-        let _ = writeln!(self.text, "G00 X{right:.3} Y{cy:.3}");
+        self.travel_xy(right, cy);
         for pass in 1..=passes as u32 {
             let z = depth * f64::from(pass) / passes;
             let _ = writeln!(self.text, "G01 Z{z:.3} F{:.1}", mill.plunge_mm_min);
@@ -610,12 +622,9 @@ impl<'a> ProgramBuilder<'a> {
         plunge: f64,
         dwell: f64,
     ) {
-        let _ = writeln!(
-            self.text,
-            "G00 X{:.3} Y{:.3}",
-            self.gx(slot.start.x),
-            self.gy(slot.start.y)
-        );
+        let x = self.gx(slot.start.x);
+        let y = self.gy(slot.start.y);
+        self.travel_xy(x, y);
         let _ = writeln!(self.text, "G01 Z-{depth:.3} F{plunge:.1}");
         let _ = writeln!(
             self.text,
@@ -636,12 +645,9 @@ impl<'a> ProgramBuilder<'a> {
             return;
         };
         let _ = writeln!(self.text, "G00 Z{retract:.3}");
-        let _ = writeln!(
-            self.text,
-            "G00 X{:.3} Y{:.3}",
-            self.gx(start.x),
-            self.gy(start.y)
-        );
+        let x = self.gx(start.x);
+        let y = self.gy(start.y);
+        self.travel_xy(x, y);
         let _ = writeln!(self.text, "G01 Z-{depth:.3} F{plunge:.1}");
 
         for point in path.points.iter().skip(1) {
@@ -673,7 +679,7 @@ impl<'a> ProgramBuilder<'a> {
         let _ = writeln!(self.text);
         let _ = writeln!(self.text, "G00 Z{:.3}", self.last_safe_z.max(0.0));
         let _ = writeln!(self.text, "M5");
-        let _ = writeln!(self.text, "G00 X0.000 Y0.000");
+        self.travel_xy(0.0, 0.0);
         let _ = writeln!(self.text, "M30");
 
         GcodeProgram {
@@ -877,6 +883,19 @@ mod tests {
         assert!(program.text.contains("(G-code 0: X9.000 Y8.000 mm)"));
         assert!(program.text.contains("X1.000 Y2.000"));
         assert!(!program.text.contains("X10.000 Y10.000"));
+    }
+
+    #[test]
+    fn machining_defaults_control_travel_and_clearance() {
+        let (project, mut library, id) = project_with_drills();
+        let mut defaults = *library.machining();
+        defaults.rapid_feed_mm_min = 1_234.0;
+        defaults.safe_z_mm = 4.5;
+        library.set_machining(defaults);
+        let program = generate_task_gcode(&project, &library, project.task(id).unwrap()).unwrap();
+        assert!(program.text.contains("(Travel feed: 1234 mm/min)"));
+        assert!(program.text.contains("(Safe Z: 4.500 mm)"));
+        assert!(program.text.contains("G01 X10.000 Y10.000 F1234.0"));
     }
 
     #[test]

@@ -27,7 +27,7 @@ drill diameters.
 Implemented:
 
 - Native application window on macOS, Windows and Linux (eframe + wgpu)
-- Dark CAD workspace with browser, canvas, inspector and task timeline
+- Dark/light/system CAD workspace with browser, canvas, inspector and task timeline
 - Gerber RS-274X import using [`gerber_parser`](https://crates.io/crates/gerber_parser) for the tokenizer, command AST and aperture macros:
   - lines, arcs, regions and flashes
   - circle/rectangle/obround/polygon apertures
@@ -66,10 +66,13 @@ Implemented:
   - selected task only
   - all enabled tasks in timeline order
   - automatic `T… M6` changes between different machining tools
+  - XY travel at the configured travel feed; safe-Z clearance from machining defaults
 - Undo/redo for imports, layers and tasks
 - Native file dialogs, drag-and-drop import, Gerber/Excellon ZIP archives and a bundled demo project
 - Versioned `.pcbcam` project files with layers, tasks, G-code origin and a tool-library snapshot
 - Recent-project menu and unsaved-changes confirmation for quit, new and open
+- Settings window (Cmd/Ctrl+,) with appearance, theme (system/dark/light) and canvas object colours
+- Machining defaults for travel feed/safe Z, drilling, milling, clearance and the default clearance tool
 - GUI-independent core crate and a command-driven engine crate
 - Cross-platform CI builds and a macOS application bundle script
 
@@ -107,7 +110,7 @@ Next:
 - Clearance follows isolation routing: all copper primitives are unioned first, then buffered by the explicit copper offset for each pass, bounded by a clearance boundary. By default the boundary is the bounding box of visible layers; any Gerber layer can be selected instead. Its largest closed contour is used, or its bounds when it has no closed contour. With a boundary, the work region is the boundary inset by Outline offset. Each pass subtracts the copper clearance from the work region, emits the holes and nested island contours of the remaining region, and adds the outer contour when copper reaches the boundary; work region is stepped inward by Offset step for the next pass. New tasks default to: outline offset = tool radius, copper offset = tool radius, offset step = tool diameter. Tool width is not used by the path builder; the explicit offsets control the geometry. Traces ending inside pads therefore do not produce separate circles inside the pad; Outside expands the copper, Inside cuts into it.
 - Slots narrower than the machining tool are rejected; wider slots are routed on the centreline, which may not clear the full slot width.
 - Project files are JSON (`.pcbcam`, version 1). Loading merges missing machining tools into the shared library; conflicting tool definitions are cloned under a new id and task references are remapped. Recent files are stored in the application settings; quit/new/open prompt to save pending changes.
-- G-code is emitted in millimetres with explicit drill/plunge moves. Coordinates are relative to the selected G-code 0-point; machine-specific headers and cutter compensation are not yet supported.
+- G-code is emitted in millimetres with explicit drill/plunge moves. Coordinates are relative to the selected G-code 0-point; machine-specific headers and cutter compensation are not yet supported. XY travel uses `G01` with the configured travel feed rather than controller-defined `G00` rapid.
 
 ## Requirements
 
@@ -178,14 +181,18 @@ The script builds a release binary, assembles `PCB-CAM.app` with the app icon an
    depths/feeds. Changes are applied online; there is no separate task-edit dialog.
    While selected, the task is drawn in red on the canvas — drilling positions
    for drill tasks, or the offset/clearance trajectory for milling tasks.
-6. Set the G-code zero point with **0-point** in the toolbar. Enter absolute
+6. Review machining defaults under **View → Settings… → Machining**:
+   travel feed, safe Z, drill plunge/depth, mill feed/plunge/depth, spot
+   depth, helical step-down, spindle and the default clearance tool. They
+   seed new tasks; travel feed and safe Z also drive exported G-code.
+7. Set the G-code zero point with **0-point** in the toolbar. Enter absolute
    X/Y values, drag the `G0` marker on the canvas, or use **Pick on canvas**.
    Double-clicking the marker reopens the value dialog. All exported
    coordinates are written relative to that point.
-7. **File → Save Project** (or **Save Project As…**) stores a `.pcbcam` file;
+8. **File → Save Project** (or **Save Project As…**) stores a `.pcbcam` file;
    **File → Open Project…** restores layers, tasks, the G-code origin and
    referenced machining tools.
-8. Export:
+9. Export:
    - **File → Export Selected Task G-code…** or the inspector's **Export task G-code…** for one task.
    - **File → Export All Tasks G-code…** or the timeline's **Export all G-code** for the combined program with tool changes.
 
@@ -254,6 +261,7 @@ pcb-cam-core  ←  pcb-cam-engine  ←  pcb-cam
 
 | Shortcut | Action |
 | --- | --- |
+| `Cmd/Ctrl+,` | Settings |
 | `Cmd/Ctrl+N` | New project |
 | `Cmd/Ctrl+O` | Open project |
 | `Cmd/Ctrl+S` | Save project |

@@ -33,7 +33,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
     }
 
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, CornerRadius::ZERO, theme::CANVAS);
+    painter.rect_filled(rect, CornerRadius::ZERO, theme::canvas());
 
     handle_input(ui, app, &response, rect);
 
@@ -209,12 +209,8 @@ fn draw_layer(
     selected: bool,
 ) {
     let (fill, outline) = match layer.format() {
-        SourceFormat::Gerber => (theme::GERBER, theme::GERBER_OUTLINE),
-        SourceFormat::Excellon => {
-            let [r, g, b] = layer.color();
-            let color = Color32::from_rgb(r, g, b);
-            (color, color)
-        }
+        SourceFormat::Gerber => (theme::gerber_fill(), theme::gerber_outline()),
+        SourceFormat::Excellon => (theme::excellon(), theme::excellon()),
     };
     let blend = |color: Color32, alpha: u8| {
         if selected {
@@ -263,7 +259,7 @@ fn draw_gerber(
 
 fn blend_over_canvas(r: u8, g: u8, b: u8, alpha: u8) -> Color32 {
     let a = f32::from(alpha) / 255.0;
-    let canvas = theme::CANVAS;
+    let canvas = theme::canvas();
     let mix = |foreground: u8, background: u8| {
         (f32::from(foreground) * a + f32::from(background) * (1.0 - a)).round() as u8
     };
@@ -291,7 +287,7 @@ fn draw_excellon(
         let radius = (hole.diameter_mm as f32 * 0.5 * view.zoom()).max(1.2);
         painter.circle_filled(center, radius, color);
         if radius > 2.2 {
-            painter.circle_filled(center, radius - 1.3, theme::CANVAS);
+            painter.circle_filled(center, radius - 1.3, theme::canvas());
         }
     }
 
@@ -315,9 +311,9 @@ fn draw_slot(painter: &Painter, start: Pos2, end: Pos2, width: f32, color: Color
     let inner = width - 2.0;
     if inner > 0.8 {
         let inner_radius = inner * 0.5;
-        painter.line_segment([start, end], Stroke::new(inner, theme::CANVAS));
-        painter.circle_filled(start, inner_radius, theme::CANVAS);
-        painter.circle_filled(end, inner_radius, theme::CANVAS);
+        painter.line_segment([start, end], Stroke::new(inner, theme::canvas()));
+        painter.circle_filled(start, inner_radius, theme::canvas());
+        painter.circle_filled(end, inner_radius, theme::canvas());
     }
 }
 
@@ -380,7 +376,7 @@ fn draw_region(
     }
     painter.add(Shape::mesh(mesh));
 
-    if fill != theme::CANVAS {
+    if fill != theme::canvas() {
         for contour in contours {
             let mut points: Vec<Pos2> = contour
                 .points
@@ -439,9 +435,9 @@ fn draw_grid(painter: &Painter, rect: Rect, view: &ViewState) {
             Stroke::new(
                 1.0,
                 if major {
-                    theme::GRID_MAJOR
+                    theme::grid_major()
                 } else {
-                    theme::GRID_MINOR
+                    theme::grid_minor()
                 },
             ),
         );
@@ -456,9 +452,9 @@ fn draw_grid(painter: &Painter, rect: Rect, view: &ViewState) {
             Stroke::new(
                 1.0,
                 if major {
-                    theme::GRID_MAJOR
+                    theme::grid_major()
                 } else {
-                    theme::GRID_MINOR
+                    theme::grid_minor()
                 },
             ),
         );
@@ -473,11 +469,11 @@ fn draw_axes(painter: &Painter, rect: Rect, view: &ViewState) {
 
     painter.line_segment(
         [pos2(rect.left(), origin.y), pos2(rect.right(), origin.y)],
-        Stroke::new(1.0, theme::AXIS_X),
+        Stroke::new(1.0, theme::axis_x()),
     );
     painter.line_segment(
         [pos2(origin.x, rect.top()), pos2(origin.x, rect.bottom())],
-        Stroke::new(1.0, theme::AXIS_Y),
+        Stroke::new(1.0, theme::axis_y()),
     );
 
     painter.text(
@@ -485,19 +481,19 @@ fn draw_axes(painter: &Painter, rect: Rect, view: &ViewState) {
         Align2::RIGHT_BOTTOM,
         "X",
         FontId::monospace(10.0),
-        theme::AXIS_X,
+        theme::axis_x(),
     );
     painter.text(
         pos2(origin.x + 7.0, rect.top() + 10.0),
         Align2::LEFT_TOP,
         "Y",
         FontId::monospace(10.0),
-        theme::AXIS_Y,
+        theme::axis_y(),
     );
 
-    painter.circle_filled(origin, 4.5, theme::CANVAS);
-    painter.circle_stroke(origin, 4.5, Stroke::new(1.2, theme::COPPER));
-    painter.circle_filled(origin, 1.6, theme::COPPER_BRIGHT);
+    painter.circle_filled(origin, 4.5, theme::canvas());
+    painter.circle_stroke(origin, 4.5, Stroke::new(1.2, theme::copper()));
+    painter.circle_filled(origin, 1.6, theme::copper_bright());
 }
 
 fn draw_task_overlay(painter: &Painter, rect: Rect, app: &PbcCam) {
@@ -508,7 +504,7 @@ fn draw_task_overlay(painter: &Painter, rect: Rect, app: &PbcCam) {
         return;
     };
     let color = if task.enabled() {
-        theme::TASK_OVERLAY
+        theme::task_overlay()
     } else {
         Color32::from_rgba_unmultiplied(255, 82, 82, 110)
     };
@@ -733,15 +729,11 @@ fn draw_message_card(
     let height = 216.0;
     let card = Rect::from_center_size(rect.center() + vec2(0.0, -4.0), vec2(width, height));
 
-    painter.rect_filled(
-        card,
-        CornerRadius::same(12),
-        Color32::from_rgba_unmultiplied(17, 22, 28, 248),
-    );
+    painter.rect_filled(card, CornerRadius::same(12), theme::panel_raised());
     painter.rect_stroke(
         card,
         CornerRadius::same(12),
-        Stroke::new(1.0, theme::BORDER_STRONG),
+        Stroke::new(1.0, theme::border_strong()),
         StrokeKind::Inside,
     );
     painter.line_segment(
@@ -749,7 +741,7 @@ fn draw_message_card(
             card.center_top() + vec2(-26.0, 0.0),
             card.center_top() + vec2(26.0, 0.0),
         ],
-        Stroke::new(2.0, theme::COPPER),
+        Stroke::new(2.0, theme::copper()),
     );
 
     let logo = Rect::from_center_size(pos2(card.center().x, card.top() + 48.0), Vec2::splat(46.0));
@@ -760,21 +752,21 @@ fn draw_message_card(
         Align2::CENTER_CENTER,
         title,
         FontId::proportional(19.0),
-        theme::TEXT,
+        theme::text(),
     );
     painter.text(
         pos2(card.center().x, card.top() + 125.0),
         Align2::CENTER_CENTER,
         line_one,
         FontId::proportional(12.0),
-        theme::TEXT_MUTED,
+        theme::text_muted(),
     );
     painter.text(
         pos2(card.center().x, card.top() + 144.0),
         Align2::CENTER_CENTER,
         line_two,
         FontId::proportional(12.0),
-        theme::TEXT_FAINT,
+        theme::text_faint(),
     );
 
     let footer_line_y = card.bottom() - 35.0;
@@ -783,14 +775,14 @@ fn draw_message_card(
             pos2(card.left() + 24.0, footer_line_y),
             pos2(card.right() - 24.0, footer_line_y),
         ],
-        Stroke::new(1.0, theme::BORDER),
+        Stroke::new(1.0, theme::border()),
     );
     painter.text(
         pos2(card.center().x, card.bottom() - 18.0),
         Align2::CENTER_CENTER,
         footer,
         FontId::proportional(9.0),
-        theme::TEXT_FAINT,
+        theme::text_faint(),
     );
 
     card
@@ -802,9 +794,9 @@ fn draw_gcode_origin(painter: &Painter, rect: Rect, view: &ViewState, origin: Po
         return;
     }
     let color = if active {
-        theme::TASK_OVERLAY
+        theme::task_overlay()
     } else {
-        theme::COPPER_BRIGHT
+        theme::copper_bright()
     };
     let stroke = Stroke::new(if active { 1.8 } else { 1.2 }, color);
     painter.circle_stroke(center, 7.0, stroke);
@@ -850,43 +842,41 @@ fn draw_overlays(painter: &Painter, rect: Rect, app: &PbcCam) {
 }
 
 fn chip(painter: &Painter, anchor: Pos2, text: &str) -> Rect {
-    let galley =
-        painter.layout_no_wrap(text.to_owned(), FontId::monospace(10.0), theme::TEXT_MUTED);
+    let galley = painter.layout_no_wrap(
+        text.to_owned(),
+        FontId::monospace(10.0),
+        theme::text_muted(),
+    );
     let rect = Rect::from_min_size(anchor, galley.size() + vec2(16.0, 8.0));
 
-    painter.rect_filled(
-        rect,
-        CornerRadius::same(5),
-        Color32::from_rgba_unmultiplied(17, 22, 28, 236),
-    );
+    painter.rect_filled(rect, CornerRadius::same(5), theme::panel_raised());
     painter.rect_stroke(
         rect,
         CornerRadius::same(5),
-        Stroke::new(1.0, theme::BORDER),
+        Stroke::new(1.0, theme::border()),
         StrokeKind::Inside,
     );
-    painter.galley(rect.min + vec2(8.0, 4.0), galley, theme::TEXT_MUTED);
+    painter.galley(rect.min + vec2(8.0, 4.0), galley, theme::text_muted());
     rect
 }
 
 fn chip_right(painter: &Painter, rect: Rect, text: &str) {
-    let galley =
-        painter.layout_no_wrap(text.to_owned(), FontId::monospace(10.0), theme::TEXT_MUTED);
+    let galley = painter.layout_no_wrap(
+        text.to_owned(),
+        FontId::monospace(10.0),
+        theme::text_muted(),
+    );
     let width = galley.size().x + 16.0;
     let anchor = pos2(rect.right() - 14.0 - width, rect.top() + 14.0);
     let chip_rect = Rect::from_min_size(anchor, galley.size() + vec2(16.0, 8.0));
-    painter.rect_filled(
-        chip_rect,
-        CornerRadius::same(5),
-        Color32::from_rgba_unmultiplied(17, 22, 28, 236),
-    );
+    painter.rect_filled(chip_rect, CornerRadius::same(5), theme::panel_raised());
     painter.rect_stroke(
         chip_rect,
         CornerRadius::same(5),
-        Stroke::new(1.0, theme::BORDER),
+        Stroke::new(1.0, theme::border()),
         StrokeKind::Inside,
     );
-    painter.galley(chip_rect.min + vec2(8.0, 4.0), galley, theme::TEXT_MUTED);
+    painter.galley(chip_rect.min + vec2(8.0, 4.0), galley, theme::text_muted());
 }
 
 fn draw_scale_bar(painter: &Painter, rect: Rect, app: &PbcCam) {
@@ -896,7 +886,7 @@ fn draw_scale_bar(painter: &Painter, rect: Rect, app: &PbcCam) {
     let start = pos2(rect.left() + 20.0, rect.bottom() - 24.0);
     let end = pos2(start.x + length_px, start.y);
 
-    let line = Stroke::new(1.4, theme::TEXT_MUTED);
+    let line = Stroke::new(1.4, theme::text_muted());
     painter.line_segment([start, end], line);
     painter.line_segment([start, pos2(start.x, start.y - 5.0)], line);
     painter.line_segment([end, pos2(end.x, end.y - 5.0)], line);
@@ -906,7 +896,7 @@ fn draw_scale_bar(painter: &Painter, rect: Rect, app: &PbcCam) {
         Align2::CENTER_BOTTOM,
         view::format_length(length_mm as f32, app.project().units()),
         FontId::monospace(10.0),
-        theme::TEXT_MUTED,
+        theme::text_muted(),
     );
 }
 

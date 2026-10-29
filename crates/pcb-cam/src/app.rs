@@ -43,6 +43,11 @@ pub(crate) const SHORTCUT_IMPORT: &str = if cfg!(target_os = "macos") {
 } else {
     "Ctrl+Shift+O"
 };
+pub(crate) const SHORTCUT_SETTINGS: &str = if cfg!(target_os = "macos") {
+    "Cmd+,"
+} else {
+    "Ctrl+,"
+};
 pub(crate) const SHORTCUT_SAVE: &str = if cfg!(target_os = "macos") {
     "Cmd+S"
 } else {
@@ -480,6 +485,14 @@ pub(crate) struct OriginDialog {
     pub(crate) y: f64,
 }
 
+/// Settings window section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SettingsSection {
+    #[default]
+    Appearance,
+    Machining,
+}
+
 /// Deferred action waiting for unsaved-change confirmation.
 #[derive(Debug, Clone)]
 pub(crate) enum PendingAction {
@@ -500,6 +513,9 @@ pub struct PbcCam {
     pub(crate) status_error: bool,
     pub(crate) about_open: bool,
     pub(crate) shortcuts_open: bool,
+    pub(crate) settings_open: bool,
+    pub(crate) settings_section: SettingsSection,
+    pub(crate) appearance: theme::AppearanceSettings,
     pub(crate) task_draft: Option<TaskDraft>,
     pub(crate) tool_editor: Option<ToolEditor>,
     clearance_preview: Option<ClearancePreview>,
@@ -519,7 +535,12 @@ pub struct PbcCam {
 impl PbcCam {
     /// Build the application and install the PCB-CAM style.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        theme::apply(&cc.egui_ctx);
+        let appearance: theme::AppearanceSettings = cc
+            .storage
+            .and_then(|storage| storage.get_string("appearance_settings"))
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default();
+        theme::apply(&cc.egui_ctx, &appearance);
         log::info!("starting {APP_NAME} {VERSION}");
 
         let mut session = Session::new();
@@ -562,6 +583,9 @@ impl PbcCam {
             status_error: false,
             about_open: false,
             shortcuts_open: false,
+            settings_open: false,
+            settings_section: SettingsSection::Appearance,
+            appearance,
             task_draft: None,
             tool_editor: None,
             clearance_preview: None,
@@ -1560,12 +1584,12 @@ impl PbcCam {
                         self.project().name()
                     ))
                     .size(12.0)
-                    .color(theme::TEXT),
+                    .color(theme::text()),
                 );
                 ui.label(
                     RichText::new(format!("Save them {target}?"))
                         .size(11.0)
-                        .color(theme::TEXT_MUTED),
+                        .color(theme::text_muted()),
                 );
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
@@ -1612,14 +1636,14 @@ impl PbcCam {
                 ui.label(
                     RichText::new("Absolute board coordinates that become X0 Y0.")
                         .size(11.0)
-                        .color(theme::TEXT_MUTED),
+                        .color(theme::text_muted()),
                 );
                 ui.add_space(8.0);
                 egui::Grid::new("gcode_origin_grid")
                     .num_columns(2)
                     .spacing(vec2(10.0, 6.0))
                     .show(ui, |ui| {
-                        ui.label(RichText::new("X").color(theme::TEXT_MUTED));
+                        ui.label(RichText::new("X").color(theme::text_muted()));
                         ui.add(
                             egui::DragValue::new(&mut dialog.x)
                                 .speed(0.1)
@@ -1627,7 +1651,7 @@ impl PbcCam {
                                 .suffix(" mm"),
                         );
                         ui.end_row();
-                        ui.label(RichText::new("Y").color(theme::TEXT_MUTED));
+                        ui.label(RichText::new("Y").color(theme::text_muted()));
                         ui.add(
                             egui::DragValue::new(&mut dialog.y)
                                 .speed(0.1)
@@ -1640,7 +1664,7 @@ impl PbcCam {
                 ui.label(
                     RichText::new("Drag the G0 marker on the canvas, or pick a point.")
                         .size(10.5)
-                        .color(theme::TEXT_FAINT),
+                        .color(theme::text_faint()),
                 );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -1726,6 +1750,9 @@ impl PbcCam {
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
             self.save_project();
         }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Comma)) {
+            self.settings_open = true;
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)) {
             self.open_project_dialog(ctx);
         }
@@ -1760,6 +1787,7 @@ impl PbcCam {
     }
 
     fn show_dialogs(&mut self, ctx: &egui::Context) {
+        ui::settings::show(ctx, self);
         self.show_unsaved_dialog(ctx);
         self.show_origin_dialog(ctx);
 
@@ -1783,7 +1811,7 @@ impl PbcCam {
                             ui.label(
                                 RichText::new("PCB fabrication CAM")
                                     .size(11.0)
-                                    .color(theme::TEXT_MUTED),
+                                    .color(theme::text_muted()),
                             );
                         });
                     });
@@ -1795,7 +1823,7 @@ impl PbcCam {
                              fabrication data into CNC control programs.",
                         )
                         .size(12.5)
-                        .color(theme::TEXT),
+                        .color(theme::text()),
                     );
                     ui.add_space(10.0);
 
@@ -1820,7 +1848,7 @@ impl PbcCam {
                         ui.label(
                             RichText::new("© 2026 andryblack")
                                 .size(10.5)
-                                .color(theme::TEXT_FAINT),
+                                .color(theme::text_faint()),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("Close").clicked() {
@@ -1850,6 +1878,7 @@ impl PbcCam {
                     shortcut_row(ui, SHORTCUT_OPEN, "Open project");
                     shortcut_row(ui, SHORTCUT_SAVE, "Save project");
                     shortcut_row(ui, SHORTCUT_SAVE_AS, "Save project as");
+                    shortcut_row(ui, SHORTCUT_SETTINGS, "Settings");
                     shortcut_row(ui, SHORTCUT_IMPORT, "Import Gerber, Excellon or ZIP");
                     shortcut_row(ui, "Cmd/Ctrl+E", "Export selected task G-code");
                     shortcut_row(ui, "Cmd/Ctrl+Shift+E", "Export all tasks G-code");
@@ -2075,7 +2104,7 @@ impl PbcCam {
                 ui.add(egui::TextEdit::singleline(&mut editor.name).desired_width(f32::INFINITY));
             });
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Type").size(11.0).color(theme::TEXT_MUTED));
+                ui.label(RichText::new("Type").size(11.0).color(theme::text_muted()));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     for kind in [
                         ToolKind::Cone,
@@ -2099,7 +2128,7 @@ impl PbcCam {
 
             if let Some(error) = &editor.error {
                 ui.add_space(8.0);
-                ui.label(RichText::new(error).size(11.0).color(theme::ERROR));
+                ui.label(RichText::new(error).size(11.0).color(theme::error()));
             }
 
             ui.add_space(12.0);
@@ -2160,7 +2189,11 @@ impl PbcCam {
 
 fn spindle_row(ui: &mut egui::Ui, spindle: &mut u32) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Spindle").size(11.0).color(theme::TEXT_MUTED));
+        ui.label(
+            RichText::new("Spindle")
+                .size(11.0)
+                .color(theme::text_muted()),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add(
                 egui::DragValue::new(spindle)
@@ -2174,6 +2207,7 @@ fn spindle_row(ui: &mut egui::Ui, spindle: &mut u32) {
 
 impl eframe::App for PbcCam {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        theme::sync(ui.ctx(), &self.appearance);
         self.handle_close_request(ui.ctx());
         self.handle_shortcuts(ui.ctx());
         self.sync_window_title(ui.ctx());
@@ -2220,6 +2254,9 @@ impl eframe::App for PbcCam {
         }
         if let Ok(json) = serde_json::to_string(&self.recent_projects) {
             storage.set_string("recent_projects", json);
+        }
+        if let Ok(json) = serde_json::to_string(&self.appearance) {
+            storage.set_string("appearance_settings", json);
         }
     }
 }
@@ -2292,8 +2329,8 @@ fn classify_zip_entry(name: &str, text: &str) -> Option<SourceFormat> {
 
 pub(crate) fn dialog_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(theme::PANEL_RAISED)
-        .stroke(Stroke::new(1.0, theme::BORDER_STRONG))
+        .fill(theme::panel_raised())
+        .stroke(Stroke::new(1.0, theme::border_strong()))
         .corner_radius(10)
         .inner_margin(egui::Margin::same(18))
 }
@@ -2306,8 +2343,8 @@ fn shortcut_section(ui: &mut egui::Ui, title: &str) {
 fn shortcut_row(ui: &mut egui::Ui, keys: &str, action: &str) {
     ui.horizontal(|ui| {
         egui::Frame::new()
-            .fill(theme::CANVAS)
-            .stroke(Stroke::new(1.0, theme::BORDER))
+            .fill(theme::canvas())
+            .stroke(Stroke::new(1.0, theme::border()))
             .corner_radius(4)
             .inner_margin(egui::Margin::symmetric(6, 2))
             .show(ui, |ui| {
@@ -2315,10 +2352,10 @@ fn shortcut_row(ui: &mut egui::Ui, keys: &str, action: &str) {
                     RichText::new(keys)
                         .size(10.5)
                         .monospace()
-                        .color(theme::COPPER),
+                        .color(theme::copper()),
                 );
             });
-        ui.label(RichText::new(action).size(11.5).color(theme::TEXT_MUTED));
+        ui.label(RichText::new(action).size(11.5).color(theme::text_muted()));
     });
 }
 
@@ -2330,7 +2367,7 @@ fn metric_row(
     suffix: &str,
 ) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).size(11.0).color(theme::TEXT_MUTED));
+        ui.label(RichText::new(label).size(11.0).color(theme::text_muted()));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add(
                 egui::DragValue::new(value)

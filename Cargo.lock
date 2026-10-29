@@ -2886,6 +2886,7 @@ dependencies = [
  "pcb-cam-core",
  "pcb-cam-engine",
  "rfd",
+ "serde",
  "serde_json",
  "zip",
 ]
