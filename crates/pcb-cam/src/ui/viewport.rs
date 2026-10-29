@@ -5,8 +5,7 @@ use eframe::egui::{
     Shape, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
 };
 use pcb_cam_core::{
-    Aperture, ApertureHole, ApertureShape, Bounds, ExcellonLayer, GerberLayer, Layer,
-    LayerGeometry, OperationKind, Path, Polarity, Primitive,
+    Bounds, ExcellonLayer, GerberRegion, Layer, LayerGeometry, OperationKind, Path, SourceFormat,
 };
 
 use crate::app::{PbcCam, Selection};
@@ -44,6 +43,8 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         draw_axes(&painter, rect, &app.view);
     }
 
+    app.sync_render_cache();
+
     let selected_layer = match app.selection {
         Some(Selection::Layer(id)) => Some(id),
         _ => None,
@@ -60,14 +61,28 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         .copied()
         .filter(|layer| Some(layer.id()) != selected_layer)
     {
-        draw_layer(&painter, rect, &app.view, layer, false);
+        draw_layer(
+            &painter,
+            rect,
+            &app.view,
+            layer,
+            app.render_regions(layer.id()),
+            false,
+        );
     }
     if let Some(layer) = visible_layers
         .iter()
         .copied()
         .find(|layer| Some(layer.id()) == selected_layer)
     {
-        draw_layer(&painter, rect, &app.view, layer, true);
+        draw_layer(
+            &painter,
+            rect,
+            &app.view,
+            layer,
+            app.render_regions(layer.id()),
+            true,
+        );
     }
 
     draw_task_overlay(&painter, rect, app);
@@ -130,21 +145,44 @@ fn handle_input(ui: &Ui, app: &mut PbcCam, response: &Response, rect: Rect) {
     );
 }
 
-fn draw_layer(painter: &Painter, rect: Rect, view: &ViewState, layer: &Layer, selected: bool) {
-    let [r, g, b] = layer.color();
-    let color = if selected {
-        Color32::from_rgb(r, g, b)
-    } else {
-        // Pre-blend toward the canvas instead of drawing translucent strokes.
-        // Overlapping caps/joins must not become darker or lighter.
-        blend_over_canvas(r, g, b, 220)
+fn draw_layer(
+    painter: &Painter,
+    rect: Rect,
+    view: &ViewState,
+    layer: &Layer,
+    regions: Option<&[GerberRegion]>,
+    selected: bool,
+) {
+    let (fill, outline) = match layer.format() {
+        SourceFormat::Gerber => (theme::GERBER, theme::GERBER_OUTLINE),
+        SourceFormat::Excellon => {
+            let [r, g, b] = layer.color();
+            let color = Color32::from_rgb(r, g, b);
+            (color, color)
+        }
+    };
+    let blend = |color: Color32, alpha: u8| {
+        if selected {
+            color
+        } else {
+            blend_over_canvas(color.r(), color.g(), color.b(), alpha)
+        }
     };
     match layer.geometry() {
-        LayerGeometry::Gerber(gerber) => {
-            draw_gerber(painter, rect, view, gerber, color);
+        LayerGeometry::Gerber(_) => {
+            if let Some(regions) = regions {
+                draw_gerber(
+                    painter,
+                    rect,
+                    view,
+                    regions,
+                    blend(fill, 232),
+                    blend(outline, 240),
+                );
+            }
         }
         LayerGeometry::Excellon(excellon) => {
-            draw_excellon(painter, rect, view, excellon, color);
+            draw_excellon(painter, rect, view, excellon, blend(fill, 232));
         }
     }
 }
@@ -153,62 +191,18 @@ fn draw_gerber(
     painter: &Painter,
     rect: Rect,
     view: &ViewState,
-    gerber: &GerberLayer,
-    color: Color32,
+    regions: &[GerberRegion],
+    fill: Color32,
+    outline: Color32,
 ) {
-    for primitive in &gerber.primitives {
-        let Some(bounds) = primitive.bounds() else {
+    for region in regions {
+        let Some(bounds) = region.outer.bounds() else {
             continue;
         };
         if !bounds_visible(bounds, view, rect) {
             continue;
         }
-        let primitive_color = match primitive {
-            Primitive::Stroke { polarity, .. }
-            | Primitive::Flash { polarity, .. }
-            | Primitive::Region { polarity, .. } => {
-                if *polarity == Polarity::Clear {
-                    theme::CANVAS
-                } else {
-                    color
-                }
-            }
-        };
-
-        match primitive {
-            Primitive::Stroke { path, aperture, .. } => {
-                let points: Vec<Pos2> = path
-                    .points
-                    .iter()
-                    .map(|point| view.world_to_screen(pos2(point.x as f32, point.y as f32), rect))
-                    .collect();
-                let width = (aperture_stroke_width(aperture) * view.zoom()).max(0.8);
-                if let Some(mesh) =
-                    stroke_mesh(&points, path.closed, width.min(80.0), primitive_color)
-                {
-                    painter.add(Shape::mesh(mesh));
-                }
-            }
-            Primitive::Flash {
-                position,
-                aperture,
-                rotation_degrees,
-                ..
-            } => {
-                draw_flash(
-                    painter,
-                    rect,
-                    view,
-                    *position,
-                    aperture,
-                    *rotation_degrees,
-                    primitive_color,
-                );
-            }
-            Primitive::Region { contours, .. } => {
-                draw_region(painter, rect, view, contours, primitive_color);
-            }
-        }
+        draw_region(painter, rect, view, region, fill, outline);
     }
 }
 
@@ -226,201 +220,6 @@ fn blend_over_canvas(r: u8, g: u8, b: u8, alpha: u8) -> Color32 {
 /// Epaint's thick paths use miter joins and cut off sharp corners, which is
 /// wrong for a circular Gerber aperture: the aperture centre traces the path
 /// and the swept area is the Minkowski sum with a disc.
-fn stroke_mesh(points: &[Pos2], closed: bool, width: f32, color: Color32) -> Option<Mesh> {
-    if points.len() < 2 || !width.is_finite() || width <= 0.0 {
-        return None;
-    }
-    let radius = width * 0.5;
-    let mut mesh = Mesh::default();
-
-    let mut add_quad = |a: Pos2, b: Pos2| {
-        let delta = b - a;
-        if delta.length_sq() < 1e-12 {
-            return;
-        }
-        let normal = delta.normalized().rot90() * radius;
-        let base = mesh.vertices.len() as u32;
-        mesh.colored_vertex(a + normal, color);
-        mesh.colored_vertex(b + normal, color);
-        mesh.colored_vertex(b - normal, color);
-        mesh.colored_vertex(a - normal, color);
-        mesh.add_triangle(base, base + 1, base + 2);
-        mesh.add_triangle(base, base + 2, base + 3);
-    };
-
-    for pair in points.windows(2) {
-        add_quad(pair[0], pair[1]);
-    }
-    if closed && points.len() > 2 {
-        add_quad(points[points.len() - 1], points[0]);
-    }
-
-    let segments = if radius < 1.5 {
-        6
-    } else if radius < 4.0 {
-        10
-    } else if radius < 10.0 {
-        16
-    } else {
-        24
-    };
-    let step = std::f32::consts::TAU / segments as f32;
-    for center in points {
-        let base = mesh.vertices.len() as u32;
-        mesh.colored_vertex(*center, color);
-        for index in 0..segments {
-            let angle = index as f32 * step;
-            mesh.colored_vertex(
-                pos2(
-                    center.x + radius * angle.cos(),
-                    center.y + radius * angle.sin(),
-                ),
-                color,
-            );
-        }
-        for index in 0..segments {
-            let next = (index + 1) % segments;
-            mesh.add_triangle(base, base + 1 + index, base + 1 + next);
-        }
-    }
-
-    Some(mesh)
-}
-
-fn draw_region(painter: &Painter, rect: Rect, view: &ViewState, contours: &[Path], color: Color32) {
-    let mut polygons: Vec<Vec<Pos2>> = contours
-        .iter()
-        .filter_map(|contour| {
-            let mut points: Vec<Pos2> = contour
-                .points
-                .iter()
-                .map(|point| view.world_to_screen(pos2(point.x as f32, point.y as f32), rect))
-                .collect();
-            if points.len() > 1 && points.first() == points.last() {
-                points.pop();
-            }
-            (points.len() >= 3).then_some(points)
-        })
-        .collect();
-    if polygons.is_empty() {
-        return;
-    }
-
-    // Gerber regions may contain an outer contour and holes. Earcut expects
-    // the outer ring first; use the largest ring as the outer one.
-    polygons.sort_by(|a, b| polygon_area(b).abs().total_cmp(&polygon_area(a).abs()));
-    let mut data: Vec<f32> = Vec::new();
-    let mut holes: Vec<usize> = Vec::new();
-    for (index, polygon) in polygons.iter().enumerate() {
-        if index > 0 {
-            holes.push(data.len() / 2);
-        }
-        for point in polygon {
-            data.push(point.x);
-            data.push(point.y);
-        }
-    }
-    let Ok(indices) = earcutr::earcut(&data, &holes, 2) else {
-        return;
-    };
-    if indices.is_empty() {
-        return;
-    }
-
-    let mut mesh = Mesh::default();
-    for [x, y] in data.as_chunks::<2>().0 {
-        mesh.colored_vertex(pos2(*x, *y), color);
-    }
-    for [a, b, c] in indices.as_chunks::<3>().0 {
-        mesh.add_triangle(*a as u32, *b as u32, *c as u32);
-    }
-    painter.add(Shape::mesh(mesh));
-}
-
-fn polygon_area(points: &[Pos2]) -> f32 {
-    let mut area = 0.0;
-    for index in 0..points.len() {
-        let a = points[index];
-        let b = points[(index + 1) % points.len()];
-        area += a.x * b.y - b.x * a.y;
-    }
-    area * 0.5
-}
-
-fn draw_flash(
-    painter: &Painter,
-    rect: Rect,
-    view: &ViewState,
-    position: pcb_cam_core::Point,
-    aperture: &Aperture,
-    rotation_degrees: f64,
-    color: Color32,
-) {
-    let center = view.world_to_screen(pos2(position.x as f32, position.y as f32), rect);
-    if !rect.expand(100.0).contains(center) {
-        return;
-    }
-    match aperture.shape {
-        ApertureShape::Circle { diameter } => {
-            let radius = (diameter as f32 * 0.5 * view.zoom()).max(0.7);
-            painter.circle_filled(center, radius, color);
-            draw_hole(painter, center, aperture.hole.as_ref(), view, radius);
-        }
-        ApertureShape::Rectangle { .. }
-        | ApertureShape::Obround { .. }
-        | ApertureShape::Polygon { .. } => {
-            let world_points = aperture.outline(position, rotation_degrees);
-            let points: Vec<Pos2> = world_points
-                .iter()
-                .map(|point| view.world_to_screen(pos2(point.x as f32, point.y as f32), rect))
-                .collect();
-            if points.len() >= 3 {
-                painter.add(Shape::convex_polygon(points, color, Stroke::NONE));
-            }
-            draw_rectangular_hole(painter, center, aperture.hole.as_ref(), view);
-        }
-    }
-}
-
-fn draw_hole(
-    painter: &Painter,
-    center: Pos2,
-    hole: Option<&ApertureHole>,
-    view: &ViewState,
-    outer_radius: f32,
-) {
-    match hole {
-        Some(ApertureHole::Circle { diameter }) => {
-            let radius = (*diameter as f32 * 0.5 * view.zoom()).max(0.4);
-            painter.circle_filled(center, radius.min(outer_radius), theme::CANVAS);
-        }
-        Some(ApertureHole::Rectangle { width, height }) => {
-            let size = vec2(
-                (*width as f32 * view.zoom()).max(0.8),
-                (*height as f32 * view.zoom()).max(0.8),
-            );
-            painter.rect_filled(
-                Rect::from_center_size(center, size),
-                CornerRadius::ZERO,
-                theme::CANVAS,
-            );
-        }
-        None => {}
-    }
-}
-
-fn draw_rectangular_hole(
-    painter: &Painter,
-    center: Pos2,
-    hole: Option<&ApertureHole>,
-    view: &ViewState,
-) {
-    if let Some(ApertureHole::Circle { diameter }) = hole {
-        let radius = (*diameter as f32 * 0.5 * view.zoom()).max(0.4);
-        painter.circle_filled(center, radius, theme::CANVAS);
-    }
-}
-
 fn draw_excellon(
     painter: &Painter,
     rect: Rect,
@@ -467,15 +266,90 @@ fn draw_slot(painter: &Painter, start: Pos2, end: Pos2, width: f32, color: Color
     }
 }
 
-fn aperture_stroke_width(aperture: &Aperture) -> f32 {
-    match aperture.shape {
-        ApertureShape::Circle { diameter } => diameter as f32,
-        ApertureShape::Rectangle { width, height } | ApertureShape::Obround { width, height } => {
-            width.min(height) as f32
-        }
-        ApertureShape::Polygon { diameter, .. } => diameter as f32,
+fn draw_region(
+    painter: &Painter,
+    rect: Rect,
+    view: &ViewState,
+    region: &GerberRegion,
+    fill: Color32,
+    outline: Color32,
+) {
+    let contours: Vec<&Path> = std::iter::once(&region.outer)
+        .chain(region.holes.iter())
+        .collect();
+    let mut polygons: Vec<Vec<Pos2>> = contours
+        .iter()
+        .filter_map(|contour| {
+            let mut points: Vec<Pos2> = contour
+                .points
+                .iter()
+                .map(|point| view.world_to_screen(pos2(point.x as f32, point.y as f32), rect))
+                .collect();
+            if points.len() > 1 && points.first() == points.last() {
+                points.pop();
+            }
+            (points.len() >= 3).then_some(points)
+        })
+        .collect();
+    if polygons.is_empty() {
+        return;
     }
-    .max(0.01)
+
+    // Gerber regions may contain an outer contour and holes. Earcut expects
+    // the outer ring first; use the largest ring as the outer one.
+    polygons.sort_by(|a, b| polygon_area(b).abs().total_cmp(&polygon_area(a).abs()));
+    let mut data: Vec<f32> = Vec::new();
+    let mut holes: Vec<usize> = Vec::new();
+    for (index, polygon) in polygons.iter().enumerate() {
+        if index > 0 {
+            holes.push(data.len() / 2);
+        }
+        for point in polygon {
+            data.push(point.x);
+            data.push(point.y);
+        }
+    }
+    let Ok(indices) = earcutr::earcut(&data, &holes, 2) else {
+        return;
+    };
+    if indices.is_empty() {
+        return;
+    }
+
+    let mut mesh = Mesh::default();
+    for [x, y] in data.as_chunks::<2>().0 {
+        mesh.colored_vertex(pos2(*x, *y), fill);
+    }
+    for [a, b, c] in indices.as_chunks::<3>().0 {
+        mesh.add_triangle(*a as u32, *b as u32, *c as u32);
+    }
+    painter.add(Shape::mesh(mesh));
+
+    if fill != theme::CANVAS {
+        for contour in contours {
+            let mut points: Vec<Pos2> = contour
+                .points
+                .iter()
+                .map(|point| view.world_to_screen(pos2(point.x as f32, point.y as f32), rect))
+                .collect();
+            if points.len() > 1 && points.first() != points.last() {
+                points.push(points[0]);
+            }
+            if points.len() >= 3 {
+                painter.add(Shape::line(points, Stroke::new(1.25, outline)));
+            }
+        }
+    }
+}
+
+fn polygon_area(points: &[Pos2]) -> f32 {
+    let mut area = 0.0;
+    for index in 0..points.len() {
+        let a = points[index];
+        let b = points[(index + 1) % points.len()];
+        area += a.x * b.y - b.x * a.y;
+    }
+    area * 0.5
 }
 
 fn bounds_visible(bounds: Bounds, view: &ViewState, rect: Rect) -> bool {
@@ -967,24 +841,6 @@ fn draw_cursor(painter: &Painter, pointer: Pos2) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stroke_mesh_adds_round_cap_at_the_end() {
-        let mesh = stroke_mesh(
-            &[pos2(0.0, 0.0), pos2(10.0, 0.0), pos2(10.0, 10.0)],
-            false,
-            4.0,
-            Color32::WHITE,
-        )
-        .expect("mesh");
-        assert!(!mesh.indices.is_empty());
-        assert!(
-            mesh.vertices
-                .iter()
-                .any(|vertex| (vertex.pos - pos2(12.0, 0.0)).length() < 0.01),
-            "round join/cap vertex missing"
-        );
-    }
 
     #[test]
     fn blend_over_canvas_is_opaque() {

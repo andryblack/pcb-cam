@@ -427,6 +427,15 @@ impl Primitive {
     }
 }
 
+/// A filled polygon of a unioned Gerber layer, with its holes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GerberRegion {
+    /// Outer contour.
+    pub outer: Path,
+    /// Interior holes.
+    pub holes: Vec<Path>,
+}
+
 /// Parsed Gerber data.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GerberLayer {
@@ -450,6 +459,27 @@ impl GerberLayer {
     /// Number of top-level drawing primitives.
     pub fn object_count(&self) -> usize {
         self.primitives.len()
+    }
+
+    /// Union all dark primitives, subtract clear primitives, and return the
+    /// filled polygons that should be drawn for this layer.
+    pub fn unioned_regions(&self) -> Vec<GerberRegion> {
+        let Some(geometry) = self.copper_geometry() else {
+            return Vec::new();
+        };
+        geometry
+            .0
+            .iter()
+            .filter_map(|polygon| {
+                let outer = geo_ring_path(polygon.exterior())?;
+                let holes = polygon
+                    .interiors()
+                    .iter()
+                    .filter_map(geo_ring_path)
+                    .collect();
+                Some(GerberRegion { outer, holes })
+            })
+            .collect()
     }
 
     /// Closed contours suitable for an edge cut.
@@ -806,6 +836,18 @@ fn boundaries_intersect(a: &GeoMultiPolygon<f64>, b: &GeoMultiPolygon<f64>) -> b
         GeoMultiLineString::new(lines)
     };
     boundary(a).intersects(&boundary(b))
+}
+
+fn geo_ring_path(ring: &GeoLineString<f64>) -> Option<Path> {
+    let mut points: Vec<Point> = ring
+        .0
+        .iter()
+        .map(|coord| Point::new(coord.x, coord.y))
+        .collect();
+    if points.len() > 1 && points.first() == points.last() {
+        points.pop();
+    }
+    (points.len() >= 3).then(|| Path::closed(points))
 }
 
 fn geo_line(path: &Path) -> Option<GeoLineString<f64>> {
@@ -1192,6 +1234,22 @@ mod tests {
         assert_eq!(contours.len(), 1);
         assert!(contours[0].closed);
         assert!(layer.has_closed_contours());
+    }
+
+    #[test]
+    fn unioned_regions_merge_overlapping_objects() {
+        let mut layer = GerberLayer::default();
+        for position in [Point::new(0.0, 0.0), Point::new(0.5, 0.0)] {
+            layer.primitives.push(Primitive::Flash {
+                position,
+                aperture: Aperture::circle(2.0),
+                rotation_degrees: 0.0,
+                polarity: Polarity::Dark,
+            });
+        }
+        let regions = layer.unioned_regions();
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].holes.len(), 0);
     }
 
     #[test]

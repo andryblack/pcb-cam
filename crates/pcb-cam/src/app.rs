@@ -1,14 +1,16 @@
 //! Application state and top-level egui layout.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use eframe::egui::{self, Align2, Button, Key, Modifiers, RichText, Stroke, Vec2};
 use pcb_cam_core::{
-    ContourSide, EngraveSide, LayerGeometry, LayerId, OperationId, OperationKind, Path as CamPath,
-    Project, SourceFormat, SourceToolInfo, Task, Tool, ToolId, ToolKind, ToolLibrary, Unit,
+    ContourSide, EngraveSide, GerberRegion, LayerGeometry, LayerId, OperationId, OperationKind,
+    Path as CamPath, Project, SourceFormat, SourceToolInfo, Task, Tool, ToolId, ToolKind,
+    ToolLibrary, Unit,
 };
 use pcb_cam_engine::{Session, find_command};
 use serde_json::{Value, json};
@@ -470,6 +472,7 @@ pub struct PbcCam {
     pub(crate) task_draft: Option<TaskDraft>,
     pub(crate) tool_editor: Option<ToolEditor>,
     clearance_preview: Option<ClearancePreview>,
+    render_cache: HashMap<LayerId, Arc<Vec<GerberRegion>>>,
     pub(crate) fit_requested: bool,
     window_title: String,
 }
@@ -514,6 +517,7 @@ impl PbcCam {
             task_draft: None,
             tool_editor: None,
             clearance_preview: None,
+            render_cache: HashMap::new(),
             fit_requested: false,
             window_title: WINDOW_TITLE.to_owned(),
         }
@@ -1544,6 +1548,36 @@ impl PbcCam {
         }
         let paths = engrave.toolpaths(gerber, boundary_path.as_ref());
         self.clearance_preview = Some(ClearancePreview { key, paths });
+    }
+
+    /// Union Gerber layers once and cache the filled polygons used by the canvas.
+    pub(crate) fn sync_render_cache(&mut self) {
+        let ids: Vec<LayerId> = self
+            .project()
+            .layers()
+            .iter()
+            .filter(|layer| layer.visible())
+            .filter(|layer| matches!(layer.geometry(), LayerGeometry::Gerber(_)))
+            .map(|layer| layer.id())
+            .collect();
+        for id in ids {
+            if self.render_cache.contains_key(&id) {
+                continue;
+            }
+            let regions = self
+                .project()
+                .layer(id)
+                .and_then(|layer| match layer.geometry() {
+                    LayerGeometry::Gerber(gerber) => Some(gerber.unioned_regions()),
+                    LayerGeometry::Excellon(_) => None,
+                })
+                .unwrap_or_default();
+            self.render_cache.insert(id, Arc::new(regions));
+        }
+    }
+
+    pub(crate) fn render_regions(&self, id: LayerId) -> Option<&[GerberRegion]> {
+        self.render_cache.get(&id).map(|regions| regions.as_slice())
     }
 
     pub(crate) fn clearance_preview_paths(&self, task: OperationId) -> Option<&[CamPath]> {

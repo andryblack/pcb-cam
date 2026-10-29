@@ -39,8 +39,12 @@ pub(crate) const COPPER_DIM: Color32 = Color32::from_rgb(124, 87, 52);
 pub(crate) const ACCENT: Color32 = Color32::from_rgb(104, 204, 169);
 /// Error text and status dot.
 pub(crate) const ERROR: Color32 = Color32::from_rgb(233, 112, 112);
+/// Gerber fill colour sampled from the reference plot.
+pub(crate) const GERBER: Color32 = Color32::from_rgb(204, 245, 142);
+/// Gerber outline colour sampled from the reference plot.
+pub(crate) const GERBER_OUTLINE: Color32 = Color32::from_rgb(100, 174, 94);
 /// Selected task toolpath/position overlay on the canvas.
-pub(crate) const TASK_OVERLAY: Color32 = Color32::from_rgb(255, 82, 82);
+pub(crate) const TASK_OVERLAY: Color32 = Color32::from_rgb(255, 0, 0);
 /// Minor canvas grid lines.
 pub(crate) const GRID_MINOR: Color32 = Color32::from_rgb(18, 24, 31);
 /// Major canvas grid lines.

@@ -277,43 +277,11 @@ impl Layer {
 }
 
 /// Pick a sensible layer colour from its name and position.
-pub fn suggest_color(name: &str, format: SourceFormat, index: usize) -> [u8; 3] {
-    let lower = name.to_ascii_lowercase();
-    let has = |needle: &str| lower.contains(needle);
-
-    if format == SourceFormat::Excellon || has("drill") {
-        return [190, 203, 215];
+pub fn suggest_color(_name: &str, format: SourceFormat, _index: usize) -> [u8; 3] {
+    match format {
+        SourceFormat::Gerber => [204, 245, 142],
+        SourceFormat::Excellon => [190, 203, 215],
     }
-    if has("edge") || has("outline") || has("gm1") || has("gko") || has("profile") {
-        return [238, 205, 112];
-    }
-    if has("mask") || has("gts") || has("gbs") {
-        return [111, 211, 181];
-    }
-    if has("silk") || has("gto") || has("gbo") {
-        return [220, 228, 238];
-    }
-    if has("paste") || has("gtp") || has("gbp") {
-        return [166, 178, 190];
-    }
-    if has("f_cu") || has("gtl") || has("top") {
-        return [227, 164, 94];
-    }
-    if has("b_cu") || has("gbl") || has("bottom") {
-        return [196, 127, 69];
-    }
-
-    const PALETTE: [[u8; 3]; 8] = [
-        [227, 164, 94],
-        [196, 127, 69],
-        [111, 211, 181],
-        [220, 228, 238],
-        [238, 205, 112],
-        [151, 177, 213],
-        [208, 139, 179],
-        [190, 203, 215],
-    ];
-    PALETTE[index % PALETTE.len()]
 }
 
 #[cfg(test)]
@@ -406,11 +374,11 @@ mod tests {
     fn colors_recognise_common_roles() {
         assert_eq!(
             suggest_color("board-F_Cu.gbr", SourceFormat::Gerber, 0),
-            [227, 164, 94]
+            [204, 245, 142]
         );
         assert_eq!(
             suggest_color("board-Edge_Cuts.gbr", SourceFormat::Gerber, 0),
-            [238, 205, 112]
+            [204, 245, 142]
         );
         assert_eq!(
             suggest_color("board.drl", SourceFormat::Excellon, 0),
