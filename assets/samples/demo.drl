@@ -1,5 +1,5 @@
 M48
-; PBC-CAM demo drill file
+; PCB-CAM demo drill file
 FMAT,2
 METRIC,TZ,000.000
 T1C0.800

@@ -1,8 +1,8 @@
-%TF.GenerationSoftware,PBC-CAM,demo,0.1*%
+%TF.GenerationSoftware,PCB-CAM,demo,0.1*%
 %TF.FileFunction,Legend,Top*%
 %FSLAX46Y46*%
 %MOMM*%
-G04 PBC-CAM demo silkscreen*
+G04 PCB-CAM demo silkscreen*
 G01*
 %ADD10C,0.150000*%
 D10*

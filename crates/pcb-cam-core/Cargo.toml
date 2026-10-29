@@ -1,0 +1,16 @@
+[package]
+name = "pcb-cam-core"
+description = "Core project model and units for PCB-CAM"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+geo = "0.33"
+gerber_parser.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

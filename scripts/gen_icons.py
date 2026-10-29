@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate PBC-CAM application icons.
+"""Generate PCB-CAM application icons.
 
 Requires Pillow:  python3 -m pip install pillow
 On macOS the script also produces an .icns via `iconutil`.

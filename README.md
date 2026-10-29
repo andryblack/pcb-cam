@@ -1,10 +1,10 @@
-# PBC-CAM
+# PCB-CAM
 
 **Cross-platform CAM workbench for PCB fabrication.**
 
-PBC-CAM turns Gerber and Excellon fabrication data into CNC control programs. It is a native desktop application written in Rust with [egui](https://github.com/emilk/egui)/[eframe](https://github.com/emilk/egui/tree/main/crates/eframe), inspired by [FlatCAM](http://flatcam.org/).
+PCB-CAM turns Gerber and Excellon fabrication data into CNC control programs. It is a native desktop application written in Rust with [egui](https://github.com/emilk/egui)/[eframe](https://github.com/emilk/egui/tree/main/crates/eframe), inspired by [FlatCAM](http://flatcam.org/).
 
-![PBC-CAM with source tools, a machining tool library and a task timeline](docs/screenshot.png)
+![PCB-CAM with source tools, a machining tool library and a task timeline](docs/screenshot.png)
 
 ## Project status
 
@@ -45,19 +45,22 @@ Implemented:
 - **Source tool browser**:
   - Excellon tools with number, diameter and object count
   - Gerber aperture summaries with object counts
-  - read-only; Excellon tools filter drilling and spot-drilling tasks
+  - read-only; Excellon tools filter drilling, hole-milling and spot-drilling tasks
+  - `+` on a source tool opens a prefilled machining-tool dialog with its diameter and suggested drill/end-mill type
 - **User machining tool library**:
   - add, edit and remove drills, end mills, V-bits and cone/spot drills
   - diameter, feed, plunge and spindle defaults
   - persisted across restarts and shared by all projects
   - used by every task; a tool in use cannot be removed
 - **Tasks** with type-specific settings:
-  - **Drilling** — source-hole filter, machining tool, depth, retract, feed, plunge, dwell, helical step-down, spindle
+  - **Drilling** — source-hole filter, drill bit, vertical plunge only, depth, retract, feed, plunge, dwell, spindle
+  - **Hole milling** — source-hole/slot filter, end mill or V-bit, helical interpolation for holes larger than the tool, routed slots, depth, retract, feed, plunge, dwell, helical step-down, spindle
   - **Spot drilling** — source-hole filter, Cone machining tool, depth, retract, feed, plunge, dwell, spindle; uses hole centres only and ignores diameters/slots
   - **Contour cut** — machining tool, outside/inside/on-line offset, depth, retract, feed, plunge, spindle
-  - **Engraving** — machining tool, outside/inside offset, pass count, offset step, depth, retract, feed, plunge, spindle
+  - **Clearance** — isolation routing around unioned copper, tool radius + outside/inside offset, pass count, offset step, depth, retract, feed, plunge, spindle
+- Drilling tasks can be created even when the library has no exact cutter; the closest tool is selected and the inspector shows warnings derived from the selected holes/slots. G-code export is blocked while a task has unresolved warnings.
 - Task timeline with selection, enable/disable, creation, reordering and online editing in the inspector
-- Selected-task canvas overlay in red: drill/slot positions, spot-drill centres, contour-cut offset toolpath or engraving paths
+- Selected-task canvas overlay in red: drill/slot positions, spot-drill centres, contour-cut offset toolpath or clearance paths
 - **Helical interpolation** for holes larger than the selected end mill/V-bit. A 1.0 mm end mill can machine a 1.5 mm hole with a helical path; a drill bit is rejected because it cannot side-cut.
 - G-code export:
   - selected task only
@@ -68,29 +71,27 @@ Implemented:
 - GUI-independent core crate and a command-driven engine crate
 - Cross-platform CI builds and a macOS application bundle script
 
-### Example: one drill task per hole group
+### Example: drilling and hole milling
 
 Suppose an Excellon file contains holes of 0.3, 1.0 and 1.5 mm, and the user
 library contains a 0.3 mm drill and a 1.0 mm end mill:
 
 1. Create a drilling task, select **Drill 0.30 mm** and check only source tool
    `T1` (the 0.3 mm holes).
-2. Create a second drilling task on the same layer, select **End mill 1.00 mm**
+2. Create a **hole-milling** task on the same layer, select **End mill 1.00 mm**
    and check the source tools for the 1.0 and 1.5 mm holes.
 3. Export all tasks. The combined program changes from the 0.3 mm drill to the
-   1.0 mm end mill once, plunge-drills the 1.0 mm holes and helically machines
-   the 1.5 mm holes.
+   1.0 mm end mill once, plunges the 1.0 mm holes and helically machines the
+   1.5 mm holes.
 
 This separation is the point: the source tool says **which objects belong to a
 task**, while the machining tool says **what cutter performs the work**.
 
 Next:
 
-- Use Gerber source tools (apertures) to filter cut-out and engraving objects
-- Engraving area fill / hatch patterns in addition to contour engraving
+- Use Gerber source tools (apertures) to filter cut-out and clearance objects
 - Contour cut tabs and multi-pass depth stepping
-- Isolation routing around copper
-- Project save/load (`.pbcam` or JSON)
+- Project save/load (`.pcbam` or JSON)
 - G-code preview and machine simulation
 - Machine/post-processor profiles and tool wear data
 
@@ -98,10 +99,10 @@ Next:
 
 - Import geometry is flattened to millimetres at load time; the source path is kept on the layer.
 - Gerber step-and-repeat, aperture blocks and negative image polarity are not fully supported yet; import reports warnings instead of failing.
-- Gerber source apertures are listed, but currently only **drilling tasks** use source tools as filters. Contour-cut and engraving tasks process the whole layer.
+- Gerber source apertures are listed, but currently only **drilling, hole-milling and spot-drilling tasks** use source tools as filters. Contour-cut and clearance tasks process the whole layer.
 - Gerber regions are triangulated; regions with multiple nested contours/islands may not be fully supported yet.
 - Contour offsets use mitred joins without a full self-intersection cleanup.
-- Engraving follows outlines and paths; filled/hardened area clearing is not implemented. Offset passes apply to closed contours and to open paths (Outside = left side of the path, Inside = right side).
+- Clearance follows isolation routing: all copper primitives are unioned first, then buffered by tool radius + offset for each pass, and clipped to the bounding box of visible layers. Traces ending inside pads therefore do not produce separate circles inside the pad; Outside expands the copper, Inside cuts into it.
 - Slots narrower than the machining tool are rejected; wider slots are routed on the centreline, which may not clear the full slot width.
 - Projects are not saved yet; the machining tool library is persisted, generated G-code is the durable output.
 - G-code is emitted in millimetres with explicit drill/plunge moves. It does not yet include machine-specific headers, work offsets or cutter compensation.
@@ -124,32 +125,32 @@ sudo apt-get install -y \
 
 ```bash
 # Development build and run
-cargo run -p pbc-cam
+cargo run -p pcb-cam
 
 # Start with the bundled demo board (4 layers, 4 tasks)
-cargo run -p pbc-cam -- --sample
+cargo run -p pcb-cam -- --sample
 
 # Open fabrication files directly
-cargo run -p pbc-cam -- path/to/board-F_Cu.gbr path/to/board.drl
+cargo run -p pcb-cam -- path/to/board-F_Cu.gbr path/to/board.drl
 
 # Or unpack/import every Gerber + drill file in a ZIP
-cargo run -p pbc-cam -- path/to/gerber-drill.zip
+cargo run -p pcb-cam -- path/to/gerber-drill.zip
 
 # Optimized binary
-cargo build --release --locked -p pbc-cam
-./target/release/pbc-cam
+cargo build --release --locked -p pcb-cam
+./target/release/pcb-cam
 ```
 
-The binary is `target/release/pbc-cam` (`pbc-cam.exe` on Windows).
+The binary is `target/release/pcb-cam` (`pcb-cam.exe` on Windows).
 
 ### macOS application bundle
 
 ```bash
 ./scripts/package-macos.sh
-open dist/PBC-CAM.app
+open dist/PCB-CAM.app
 ```
 
-The script builds a release binary, assembles `PBC-CAM.app` with the app icon and `Info.plist`, ad-hoc signs it and creates `dist/PBC-CAM-macos.zip`.
+The script builds a release binary, assembles `PCB-CAM.app` with the app icon and `Info.plist`, ad-hoc signs it and creates `dist/PCB-CAM-macos.zip`.
 
 ## Working with tools and tasks
 
@@ -163,23 +164,23 @@ The script builds a release binary, assembles `PBC-CAM.app` with the app icon an
    automatically in the application settings.
 6. Add a task from **+ Task** in the toolbar/timeline or from the browser when a
    suitable layer is selected:
-   - **Drilling** needs an Excellon layer.
+   - **Drilling** needs an Excellon layer and a matching drill bit; it only plunges vertically.
+   - **Hole milling** needs an Excellon layer and an end mill/V-bit; it can helically interpolate larger holes and route slots.
    - **Spot drill** needs an Excellon layer with holes; it punches only hole centres with a Cone tool.
    - **Contour cut** needs a Gerber layer with closed contours.
-   - **Engraving** needs a Gerber layer with paths.
+   - **Clearance** needs a Gerber layer with paths.
 7. Select the task. Edit it directly in the inspector: choose one
-   **machining tool**, check the **source tools** for drilling/spot drilling, and change
+   **machining tool**, check the **source tools** for drilling/hole milling/spot drilling, and change
    depths/feeds. Changes are applied online; there is no separate task-edit dialog.
    While selected, the task is drawn in red on the canvas — drilling positions
-   for drill tasks, or the offset/engraving trajectory for milling tasks.
+   for drill tasks, or the offset/clearance trajectory for milling tasks.
 8. Export:
    - **File → Export Selected Task G-code…** or the inspector's **Export task G-code…** for one task.
    - **File → Export All Tasks G-code…** or the timeline's **Export all G-code** for the combined program with tool changes.
 
 The demo project contains top copper, a rounded board outline with arcs, a
-silkscreen legend and a drill file. It is set up as four tasks: two drilling
-tasks with different source filters and machining tools, a contour cut and an
-engraving pass.
+silkscreen legend and a drill file. It is set up as four tasks: a drilling task for the 0.8 mm holes, a hole-milling
+task for the 1.0/3.0 mm holes, a contour cut and a clearance pass.
 
 ## Quality checks
 
@@ -194,14 +195,14 @@ cargo test --workspace --locked
 ```text
 .
 ├── crates/
-│   ├── pbc-cam/            # Desktop application (eframe/egui)
+│   ├── pcb-cam/            # Desktop application (eframe/egui)
 │   │   └── src/
 │   │       ├── app.rs      # Application state, commands, editors
-│   │       ├── theme.rs    # PBC-CAM palette and egui style
+│   │       ├── theme.rs    # PCB-CAM palette and egui style
 │   │       ├── view.rs     # Canvas camera and unit formatting
 │   │       └── ui/         # Menu, toolbar, browser, timeline, viewport
-│   ├── pbc-cam-engine/     # Session, command registry, undo/redo
-│   └── pbc-cam-core/       # GUI-independent domain and import
+│   ├── pcb-cam-engine/     # Session, command registry, undo/redo
+│   └── pcb-cam-core/       # GUI-independent domain and import
 │       └── src/
 │           ├── formats/    # Gerber and Excellon importers
 │           ├── geometry.rs # Points, paths, apertures, offset contours
@@ -225,7 +226,7 @@ The code follows a small version of the command-oriented layering used by mature
 Rust CAD tools:
 
 ```text
-pbc-cam-core  ←  pbc-cam-engine  ←  pbc-cam
+pcb-cam-core  ←  pcb-cam-engine  ←  pcb-cam
 (domain/import)   (session/commands)   (egui front end)
 ```
 
@@ -235,7 +236,7 @@ pbc-cam-core  ←  pbc-cam-engine  ←  pbc-cam
   `task.add_cutout`, `tool.create`, `file.export_task_gcode` and `edit.undo`, and
   keeps project undo/redo snapshots. The machining library belongs to the session
   and is intentionally not project-undoable.
-- **pbc-cam** is a thin egui front end. It calls commands instead of mutating the
+- **pcb-cam** is a thin egui front end. It calls commands instead of mutating the
   project directly, so future CLI and automation clients can reuse the same registry.
 
 ## Keyboard shortcuts
@@ -270,7 +271,7 @@ The editable source is [`assets/icon.svg`](assets/icon.svg). On macOS the genera
 
 ## License
 
-PBC-CAM is released under the [MIT License](LICENSE).
+PCB-CAM is released under the [MIT License](LICENSE).
 
 Copyright © 2026 andryblack
 

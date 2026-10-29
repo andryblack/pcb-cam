@@ -1,8 +1,8 @@
-%TF.GenerationSoftware,PBC-CAM,demo,0.1*%
+%TF.GenerationSoftware,PCB-CAM,demo,0.1*%
 %TF.FileFunction,Profile,NP*%
 %FSLAX46Y46*%
 %MOMM*%
-G04 PBC-CAM demo board outline*
+G04 PCB-CAM demo board outline*
 G75*
 G01*
 %ADD10C,0.150000*%

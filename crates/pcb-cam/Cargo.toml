@@ -1,0 +1,39 @@
+[package]
+name = "pcb-cam"
+description = "PCB-CAM desktop application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+default-run = "pcb-cam"
+
+[[bin]]
+name = "pcb-cam"
+path = "src/main.rs"
+
+[dependencies]
+earcutr = "0.5"
+eframe.workspace = true
+env_logger.workspace = true
+log.workspace = true
+pcb-cam-core.workspace = true
+pcb-cam-engine.workspace = true
+rfd.workspace = true
+serde_json.workspace = true
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+
+[package.metadata.bundle]
+name = "PCB-CAM"
+identifier = "com.pcb-cam.app"
+version = "0.1.0"
+category = "DeveloperTool"
+short_description = "CNC CAM for Gerber and Excellon PCB files"
+long_description = "PCB-CAM turns Gerber and Excellon fabrication data into CNC control programs. Cross-platform desktop application built with Rust and egui."
+copyright = "Copyright © 2026 andryblack"
+icon = [
+    "../../assets/icon.icns",
+    "../../assets/icon.ico",
+    "../../assets/icon.png",
+]
+osx_minimum_system_version = "11.0"

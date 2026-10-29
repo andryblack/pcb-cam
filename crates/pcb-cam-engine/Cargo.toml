@@ -1,0 +1,15 @@
+[package]
+name = "pcb-cam-engine"
+description = "Session and command engine for PCB-CAM"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+log.workspace = true
+pcb-cam-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

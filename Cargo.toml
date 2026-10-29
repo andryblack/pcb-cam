@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/pbc-cam", "crates/pbc-cam-core", "crates/pbc-cam-engine"]
+members = ["crates/pcb-cam", "crates/pcb-cam-core", "crates/pcb-cam-engine"]
 resolver = "3"
 
 [workspace.package]
@@ -19,8 +19,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 gerber_parser = "0.5.0"
-pbc-cam-core = { path = "crates/pbc-cam-core" }
-pbc-cam-engine = { path = "crates/pbc-cam-engine" }
+pcb-cam-core = { path = "crates/pcb-cam-core" }
+pcb-cam-engine = { path = "crates/pcb-cam-engine" }
 
 [profile.dev]
 opt-level = 1

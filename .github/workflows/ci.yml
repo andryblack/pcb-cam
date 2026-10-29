@@ -62,16 +62,16 @@ jobs:
         include:
           - name: Linux x86_64
             os: ubuntu-latest
-            artifact: pbc-cam-linux-x86_64
-            binary: target/release/pbc-cam
+            artifact: pcb-cam-linux-x86_64
+            binary: target/release/pcb-cam
           - name: Windows x86_64
             os: windows-latest
-            artifact: pbc-cam-windows-x86_64
-            binary: target/release/pbc-cam.exe
+            artifact: pcb-cam-windows-x86_64
+            binary: target/release/pcb-cam.exe
           - name: macOS
             os: macos-latest
-            artifact: pbc-cam-macos
-            binary: target/release/pbc-cam
+            artifact: pcb-cam-macos
+            binary: target/release/pcb-cam
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -93,7 +93,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build release
-        run: cargo build --release --locked -p pbc-cam
+        run: cargo build --release --locked -p pcb-cam
 
       - name: Upload binary
         uses: actions/upload-artifact@v4

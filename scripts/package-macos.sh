@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Build an unsigned/ad-hoc-signed PBC-CAM.app for macOS and zip it.
+# Build an unsigned/ad-hoc-signed PCB-CAM.app for macOS and zip it.
 #
 # Usage:  ./scripts/package-macos.sh
-# Output: dist/PBC-CAM.app and dist/PBC-CAM-macos.zip
+# Output: dist/PCB-CAM.app and dist/PCB-CAM-macos.zip
 
 set -euo pipefail
 
@@ -20,18 +20,18 @@ if ! command -v cargo >/dev/null 2>&1; then
     exit 1
 fi
 
-APP_NAME="PBC-CAM"
-VERSION="$(cargo pkgid -p pbc-cam | sed -E 's/.*[@#]//')"
+APP_NAME="PCB-CAM"
+VERSION="$(cargo pkgid -p pcb-cam | sed -E 's/.*[@#]//')"
 APP_DIR="$ROOT/dist/$APP_NAME.app"
 ZIP_PATH="$ROOT/dist/$APP_NAME-macos.zip"
 
-echo "Building PBC-CAM $VERSION..."
-cargo build --release --locked -p pbc-cam
+echo "Building PCB-CAM $VERSION..."
+cargo build --release --locked -p pcb-cam
 
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
-cp target/release/pbc-cam "$APP_DIR/Contents/MacOS/pbc-cam"
+cp target/release/pcb-cam "$APP_DIR/Contents/MacOS/pcb-cam"
 cp assets/icon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
@@ -44,13 +44,13 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key>
     <string>$APP_NAME</string>
     <key>CFBundleIdentifier</key>
-    <string>com.pbc-cam.app</string>
+    <string>com.pcb-cam.app</string>
     <key>CFBundleVersion</key>
     <string>$VERSION</string>
     <key>CFBundleShortVersionString</key>
     <string>$VERSION</string>
     <key>CFBundleExecutable</key>
-    <string>pbc-cam</string>
+    <string>pcb-cam</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundlePackageType</key>
