@@ -103,6 +103,7 @@ struct ProgramBuilder<'a> {
     path_count: usize,
     helical_hole_count: usize,
     cut_length_mm: f64,
+    origin: Point,
 }
 
 impl<'a> ProgramBuilder<'a> {
@@ -115,6 +116,8 @@ impl<'a> ProgramBuilder<'a> {
         );
         let _ = writeln!(text, "(Project: {})", project.name());
         let _ = writeln!(text, "(Tasks: {task_count})");
+        let origin = project.gcode_origin();
+        let _ = writeln!(text, "(G-code 0: X{:.3} Y{:.3} mm)", origin.x, origin.y);
         let _ = writeln!(text, "G21");
         let _ = writeln!(text, "G90");
         let _ = writeln!(text, "G17");
@@ -135,7 +138,16 @@ impl<'a> ProgramBuilder<'a> {
             path_count: 0,
             helical_hole_count: 0,
             cut_length_mm: 0.0,
+            origin,
         }
+    }
+
+    fn gx(&self, value: f64) -> f64 {
+        value - self.origin.x
+    }
+
+    fn gy(&self, value: f64) -> f64 {
+        value - self.origin.y
     }
 
     fn append_task(&mut self, task: &Operation) -> Result<(), String> {
@@ -218,7 +230,8 @@ impl<'a> ProgramBuilder<'a> {
             let _ = writeln!(
                 self.text,
                 "G00 X{:.3} Y{:.3}",
-                hole.position.x, hole.position.y
+                self.gx(hole.position.x),
+                self.gy(hole.position.y)
             );
             let _ = writeln!(
                 self.text,
@@ -371,7 +384,8 @@ impl<'a> ProgramBuilder<'a> {
             let _ = writeln!(
                 self.text,
                 "G00 X{:.3} Y{:.3}",
-                hole.position.x, hole.position.y
+                self.gx(hole.position.x),
+                self.gy(hole.position.y)
             );
             let _ = writeln!(
                 self.text,
@@ -414,7 +428,8 @@ impl<'a> ProgramBuilder<'a> {
         let _ = writeln!(
             self.text,
             "G00 X{:.3} Y{:.3}",
-            hole.position.x, hole.position.y
+            self.gx(hole.position.x),
+            self.gy(hole.position.y)
         );
         let _ = writeln!(
             self.text,
@@ -440,8 +455,8 @@ impl<'a> ProgramBuilder<'a> {
             return Err("invalid helical path radius".into());
         }
         let passes = (mill.depth_mm / mill.stepdown_mm).ceil().max(1.0);
-        let cx = hole.position.x;
-        let cy = hole.position.y;
+        let cx = self.gx(hole.position.x);
+        let cy = self.gy(hole.position.y);
         let left = cx - path_radius;
         let right = cx + path_radius;
         let depth = -mill.depth_mm;
@@ -595,12 +610,18 @@ impl<'a> ProgramBuilder<'a> {
         plunge: f64,
         dwell: f64,
     ) {
-        let _ = writeln!(self.text, "G00 X{:.3} Y{:.3}", slot.start.x, slot.start.y);
+        let _ = writeln!(
+            self.text,
+            "G00 X{:.3} Y{:.3}",
+            self.gx(slot.start.x),
+            self.gy(slot.start.y)
+        );
         let _ = writeln!(self.text, "G01 Z-{depth:.3} F{plunge:.1}");
         let _ = writeln!(
             self.text,
             "G01 X{:.3} Y{:.3} F{feed:.1}",
-            slot.end.x, slot.end.y
+            self.gx(slot.end.x),
+            self.gy(slot.end.y)
         );
         if dwell > 0.0 {
             let _ = writeln!(self.text, "G04 P{dwell:.2}");
@@ -615,17 +636,32 @@ impl<'a> ProgramBuilder<'a> {
             return;
         };
         let _ = writeln!(self.text, "G00 Z{retract:.3}");
-        let _ = writeln!(self.text, "G00 X{:.3} Y{:.3}", start.x, start.y);
+        let _ = writeln!(
+            self.text,
+            "G00 X{:.3} Y{:.3}",
+            self.gx(start.x),
+            self.gy(start.y)
+        );
         let _ = writeln!(self.text, "G01 Z-{depth:.3} F{plunge:.1}");
 
         for point in path.points.iter().skip(1) {
-            let _ = writeln!(self.text, "G01 X{:.3} Y{:.3} F{feed:.1}", point.x, point.y);
+            let _ = writeln!(
+                self.text,
+                "G01 X{:.3} Y{:.3} F{feed:.1}",
+                self.gx(point.x),
+                self.gy(point.y)
+            );
         }
         if path.closed
             && let Some(last) = path.points.last()
             && last.distance(start) > 1e-7
         {
-            let _ = writeln!(self.text, "G01 X{:.3} Y{:.3} F{feed:.1}", start.x, start.y);
+            let _ = writeln!(
+                self.text,
+                "G01 X{:.3} Y{:.3} F{feed:.1}",
+                self.gx(start.x),
+                self.gy(start.y)
+            );
         }
         let _ = writeln!(self.text, "G00 Z{retract:.3}");
 
@@ -831,6 +867,16 @@ mod tests {
         assert!(program.text.contains("X10.000 Y10.000"));
         assert!(program.text.contains("Source tools: T1"));
         assert!(program.text.ends_with("M30\n"));
+    }
+
+    #[test]
+    fn gcode_origin_offsets_all_coordinates() {
+        let (mut project, library, id) = project_with_helical();
+        project.set_gcode_origin(Point::new(9.0, 8.0));
+        let program = generate_task_gcode(&project, &library, project.task(id).unwrap()).unwrap();
+        assert!(program.text.contains("(G-code 0: X9.000 Y8.000 mm)"));
+        assert!(program.text.contains("X1.000 Y2.000"));
+        assert!(!program.text.contains("X10.000 Y10.000"));
     }
 
     #[test]

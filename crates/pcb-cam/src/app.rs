@@ -6,10 +6,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use eframe::egui::{self, Align2, Button, Key, Modifiers, RichText, Stroke, Vec2};
+use eframe::egui::{self, Align2, Button, Key, Modifiers, RichText, Stroke, Vec2, vec2};
 use pcb_cam_core::{
     ContourSide, EngraveSide, GerberRegion, LayerGeometry, LayerId, OperationId, OperationKind,
-    Path as CamPath, Project, SourceFormat, SourceToolInfo, Task, Tool, ToolId, ToolKind,
+    Path as CamPath, Point, Project, SourceFormat, SourceToolInfo, Task, Tool, ToolId, ToolKind,
     ToolLibrary, Unit,
 };
 use pcb_cam_engine::{Session, find_command};
@@ -458,6 +458,13 @@ struct ClearancePreview {
     paths: Vec<CamPath>,
 }
 
+/// Editable absolute G-code zero point.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OriginDialog {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+}
+
 /// Top-level application state.
 #[derive(Debug)]
 pub struct PbcCam {
@@ -474,6 +481,10 @@ pub struct PbcCam {
     clearance_preview: Option<ClearancePreview>,
     render_cache: HashMap<LayerId, Arc<Vec<GerberRegion>>>,
     pub(crate) fit_requested: bool,
+    pub(crate) origin_pick: bool,
+    pub(crate) origin_dialog: Option<OriginDialog>,
+    pub(crate) origin_drag: bool,
+    pub(crate) origin_preview: Option<Point>,
     window_title: String,
 }
 
@@ -519,6 +530,10 @@ impl PbcCam {
             clearance_preview: None,
             render_cache: HashMap::new(),
             fit_requested: false,
+            origin_pick: false,
+            origin_dialog: None,
+            origin_drag: false,
+            origin_preview: None,
             window_title: WINDOW_TITLE.to_owned(),
         }
     }
@@ -587,6 +602,31 @@ impl PbcCam {
         if self.run_command("edit.redo", json!({})).is_some() {
             self.task_draft = None;
             self.set_status("Redo");
+        }
+    }
+
+    pub(crate) fn open_origin_dialog(&mut self) {
+        let origin = self.project().gcode_origin();
+        self.origin_pick = false;
+        self.origin_dialog = Some(OriginDialog {
+            x: origin.x,
+            y: origin.y,
+        });
+    }
+
+    pub(crate) fn set_gcode_origin(&mut self, point: Point) {
+        if self
+            .run_command(
+                "project.set_gcode_origin",
+                json!({"x": point.x, "y": point.y}),
+            )
+            .is_some()
+        {
+            self.origin_pick = false;
+            self.set_status(format!(
+                "G-code 0-point: X{:.3} Y{:.3} mm",
+                point.x, point.y
+            ));
         }
     }
 
@@ -1244,6 +1284,85 @@ impl PbcCam {
         self.set_status("Demo loaded — 4 layers, 4 tasks, source filters and machining tools");
     }
 
+    fn show_origin_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.origin_dialog else {
+            return;
+        };
+        let mut open = true;
+        let mut submit = false;
+        let mut pick = false;
+        let mut cancel = false;
+
+        egui::Window::new("G-code 0-point")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(320.0)
+            .frame(dialog_frame())
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new("Absolute board coordinates that become X0 Y0.")
+                        .size(11.0)
+                        .color(theme::TEXT_MUTED),
+                );
+                ui.add_space(8.0);
+                egui::Grid::new("gcode_origin_grid")
+                    .num_columns(2)
+                    .spacing(vec2(10.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("X").color(theme::TEXT_MUTED));
+                        ui.add(
+                            egui::DragValue::new(&mut dialog.x)
+                                .speed(0.1)
+                                .fixed_decimals(3)
+                                .suffix(" mm"),
+                        );
+                        ui.end_row();
+                        ui.label(RichText::new("Y").color(theme::TEXT_MUTED));
+                        ui.add(
+                            egui::DragValue::new(&mut dialog.y)
+                                .speed(0.1)
+                                .fixed_decimals(3)
+                                .suffix(" mm"),
+                        );
+                        ui.end_row();
+                    });
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new("Drag the G0 marker on the canvas, or pick a point.")
+                        .size(10.5)
+                        .color(theme::TEXT_FAINT),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Set").clicked() {
+                        submit = true;
+                    }
+                    if ui.button("Pick on canvas").clicked() {
+                        pick = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if submit {
+            self.set_gcode_origin(Point::new(dialog.x, dialog.y));
+            self.origin_dialog = None;
+        } else if pick {
+            self.origin_dialog = None;
+            self.origin_pick = true;
+            self.set_status("Click the canvas to place the G-code 0-point");
+        } else if cancel || !open {
+            self.origin_dialog = None;
+            self.origin_pick = false;
+        } else {
+            self.origin_dialog = Some(dialog);
+        }
+    }
+
     fn sync_window_title(&mut self, ctx: &egui::Context) {
         let dirty = if self.session.dirty() { " *" } else { "" };
         let title = format!("{APP_NAME} — {}{dirty}", self.project().name());
@@ -1275,6 +1394,13 @@ impl PbcCam {
             self.about_open = false;
             self.shortcuts_open = false;
             self.task_draft = None;
+            self.origin_dialog = None;
+            self.origin_preview = None;
+            self.origin_drag = false;
+            if self.origin_pick {
+                self.origin_pick = false;
+                self.set_status("G-code 0-point pick cancelled");
+            }
         }
 
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F1)) {
@@ -1323,6 +1449,8 @@ impl PbcCam {
     }
 
     fn show_dialogs(&mut self, ctx: &egui::Context) {
+        self.show_origin_dialog(ctx);
+
         if self.about_open {
             let mut open = true;
             let mut close_clicked = false;

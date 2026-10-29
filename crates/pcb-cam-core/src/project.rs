@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::geometry::{Bounds, LayerGeometry};
+use crate::geometry::{Bounds, LayerGeometry, Point};
 use crate::layer::{Layer, LayerId, SourceFormat, suggest_color};
 use crate::operation::{Operation, OperationId, OperationKind};
 use crate::units::Unit;
@@ -17,6 +17,7 @@ pub struct Project {
     layers: Vec<Layer>,
     operations: Vec<Operation>,
     units: Unit,
+    gcode_origin: Point,
     next_layer_id: u64,
     next_operation_id: u64,
 }
@@ -41,6 +42,7 @@ impl Project {
             layers: Vec::new(),
             operations: Vec::new(),
             units: Unit::Millimeter,
+            gcode_origin: Point::default(),
             next_layer_id: 1,
             next_operation_id: 1,
         }
@@ -57,6 +59,18 @@ impl Project {
         let name = name.trim();
         if !name.is_empty() {
             self.name = name.to_owned();
+        }
+    }
+
+    /// Board-space point that becomes X0 Y0 in the exported G-code.
+    pub fn gcode_origin(&self) -> Point {
+        self.gcode_origin
+    }
+
+    /// Move the G-code zero point in board space.
+    pub fn set_gcode_origin(&mut self, origin: Point) {
+        if origin.x.is_finite() && origin.y.is_finite() {
+            self.gcode_origin = origin;
         }
     }
 

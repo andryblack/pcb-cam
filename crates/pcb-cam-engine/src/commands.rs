@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 
 use pcb_cam_core::{
     ContourSide, CutoutOperation, DrillOperation, EngraveOperation, EngraveSide, HoleMillOperation,
-    LayerGeometry, LayerId, Operation, OperationId, OperationKind, Project, SpotDrillOperation,
-    ToolId, ToolKind, UNTITLED_PROJECT, generate_all_gcode, generate_task_gcode, parse_excellon,
-    parse_gerber,
+    LayerGeometry, LayerId, Operation, OperationId, OperationKind, Point, Project,
+    SpotDrillOperation, ToolId, ToolKind, UNTITLED_PROJECT, generate_all_gcode,
+    generate_task_gcode, parse_excellon, parse_gerber,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -48,6 +48,12 @@ struct LayerRenameParams {
 #[derive(Debug, Deserialize)]
 struct UnitsParams {
     units: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GcodeOriginParams {
+    x: f64,
+    y: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -340,6 +346,20 @@ pub(crate) fn units_set(session: &mut Session, params: &Value) -> Result<Value, 
     };
     session.project_mut().set_units(units);
     Ok(json!({"units": units.symbol()}))
+}
+
+pub(crate) fn project_set_gcode_origin(
+    session: &mut Session,
+    params: &Value,
+) -> Result<Value, String> {
+    let params: GcodeOriginParams = parse_params(params)?;
+    if !params.x.is_finite() || !params.y.is_finite() {
+        return Err("G-code origin must be finite".into());
+    }
+    session
+        .project_mut()
+        .set_gcode_origin(Point::new(params.x, params.y));
+    Ok(json!({"x": params.x, "y": params.y}))
 }
 
 pub(crate) fn tool_create(session: &mut Session, params: &Value) -> Result<Value, String> {
@@ -1532,6 +1552,20 @@ X10.0Y10.0
 X20.0Y10.0
 M30
 ";
+
+    #[test]
+    fn gcode_origin_is_undoable() {
+        let mut session = Session::new();
+        session
+            .execute("project.set_gcode_origin", &json!({"x": 12.5, "y": -4.0}))
+            .unwrap();
+        assert_eq!(session.project().gcode_origin().x, 12.5);
+        assert_eq!(session.project().gcode_origin().y, -4.0);
+        session.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(session.project().gcode_origin().x, 0.0);
+        session.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(session.project().gcode_origin().x, 12.5);
+    }
 
     #[test]
     fn import_gerber_adds_layer_and_undoes() {

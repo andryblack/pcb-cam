@@ -161,6 +161,15 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         enabled: None,
     },
     CommandSpec {
+        id: "project.set_gcode_origin",
+        label: "Set G-code 0-point",
+        description: "Choose the board point that becomes X0 Y0 in exported G-code.",
+        shortcut: None,
+        undoable: true,
+        run: crate::commands::project_set_gcode_origin,
+        enabled: None,
+    },
+    CommandSpec {
         id: "tool.create",
         label: "Add tool",
         description: "Add a machining tool to the user library.",

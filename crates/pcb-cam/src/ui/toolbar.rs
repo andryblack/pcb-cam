@@ -120,6 +120,18 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     ui.add_space(2.0);
                     ui.separator();
 
+                    let zero = ui
+                        .add(
+                            Button::new(RichText::new("0-point").size(11.5))
+                                .selected(app.origin_pick || app.origin_dialog.is_some()),
+                        )
+                        .on_hover_text(
+                            "Set the G-code X0 Y0 point (double-click the G0 marker for values)",
+                        );
+                    if zero.clicked() {
+                        app.open_origin_dialog();
+                    }
+
                     let grid = ui
                         .add(
                             Button::new(RichText::new("Grid").size(11.5))

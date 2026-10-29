@@ -29,6 +29,8 @@ enum InspectorAction {
     AddEngrave,
     ImportGerber,
     ImportExcellon,
+    PickOrigin,
+    EditOrigin,
 }
 
 /// Draw the right inspector panel.
@@ -108,6 +110,11 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         Some(InspectorAction::AddEngrave) => app.add_engrave_task(),
         Some(InspectorAction::ImportGerber) => app.import_gerber_dialog(),
         Some(InspectorAction::ImportExcellon) => app.import_excellon_dialog(),
+        Some(InspectorAction::PickOrigin) => {
+            app.origin_pick = true;
+            app.set_status("Click the canvas to place the G-code 0-point");
+        }
+        Some(InspectorAction::EditOrigin) => app.open_origin_dialog(),
         None => {}
     }
 }
@@ -135,6 +142,37 @@ fn project_overview(ui: &mut Ui, app: &PbcCam, action: &mut Option<InspectorActi
         widgets::field_row(ui, "Objects", &app.project().object_count().to_string());
         if let Some(bounds) = app.project().bounds(true) {
             widgets::field_row(ui, "Extents", &format_bounds(bounds, app.project().units()));
+        }
+        let origin = app.project().gcode_origin();
+        widgets::field_row(
+            ui,
+            "G-code 0",
+            &format!("X{:.3}  Y{:.3} mm", origin.x, origin.y),
+        );
+    });
+
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        let width = (ui.available_width() - 6.0) / 2.0;
+        if ui
+            .add_sized(
+                vec2(width, 25.0),
+                Button::new(RichText::new("Pick G-code 0").size(11.0)),
+            )
+            .on_hover_text("Click the canvas to choose the X0 Y0 point")
+            .clicked()
+        {
+            *action = Some(InspectorAction::PickOrigin);
+        }
+        if ui
+            .add_sized(
+                vec2(width, 25.0),
+                Button::new(RichText::new("Set values…").size(11.0)),
+            )
+            .on_hover_text("Enter absolute X/Y coordinates for the G-code 0-point")
+            .clicked()
+        {
+            *action = Some(InspectorAction::EditOrigin);
         }
     });
 

@@ -5,7 +5,8 @@ use eframe::egui::{
     Shape, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
 };
 use pcb_cam_core::{
-    Bounds, ExcellonLayer, GerberRegion, Layer, LayerGeometry, OperationKind, Path, SourceFormat,
+    Bounds, ExcellonLayer, GerberRegion, Layer, LayerGeometry, OperationKind, Path, Point,
+    SourceFormat,
 };
 
 use crate::app::{PbcCam, Selection};
@@ -35,6 +36,16 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
     painter.rect_filled(rect, CornerRadius::ZERO, theme::CANVAS);
 
     handle_input(ui, app, &response, rect);
+
+    if app.origin_pick {
+        ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+        if response.clicked()
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            let world = app.view.screen_to_world(pointer, rect);
+            app.set_gcode_origin(Point::new(f64::from(world.x), f64::from(world.y)));
+        }
+    }
 
     if app.settings.show_grid {
         draw_grid(&painter, rect, &app.view);
@@ -86,6 +97,13 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
     }
 
     draw_task_overlay(&painter, rect, app);
+    draw_gcode_origin(
+        &painter,
+        rect,
+        &app.view,
+        app.origin_preview.unwrap_or(app.project().gcode_origin()),
+        app.origin_pick || app.origin_drag,
+    );
 
     let empty_card = if app.project().is_empty() {
         Some(draw_empty_state(&painter, rect))
@@ -105,12 +123,40 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
 }
 
 fn handle_input(ui: &Ui, app: &mut PbcCam, response: &Response, rect: Rect) {
+    let origin = app.project().gcode_origin();
+    let origin_pos = origin_screen_pos(&app.view, rect, origin);
+    let pointer = response.interact_pointer_pos();
+    let grabbed_origin = pointer.is_some_and(|pos| pos.distance(origin_pos) <= 14.0);
+
+    if response.drag_started() && grabbed_origin {
+        app.origin_drag = true;
+        app.origin_preview = Some(origin);
+    }
+
     if response.dragged() {
-        app.view.pan_by(response.drag_delta());
+        if app.origin_drag {
+            if let Some(pos) = pointer {
+                let world = app.view.screen_to_world(pos, rect);
+                app.origin_preview = Some(Point::new(f64::from(world.x), f64::from(world.y)));
+            }
+        } else {
+            app.view.pan_by(response.drag_delta());
+        }
+    }
+
+    if response.drag_stopped() && app.origin_drag {
+        app.origin_drag = false;
+        if let Some(point) = app.origin_preview.take() {
+            app.set_gcode_origin(point);
+        }
     }
 
     if response.double_clicked() {
-        app.fit_view();
+        if grabbed_origin {
+            app.open_origin_dialog();
+        } else {
+            app.fit_view();
+        }
     }
 
     if response.hovered()
@@ -132,8 +178,13 @@ fn handle_input(ui: &Ui, app: &mut PbcCam, response: &Response, rect: Rect) {
         }
     }
 
-    if response.dragged() {
+    let hover_origin = response
+        .hover_pos()
+        .is_some_and(|pos| pos.distance(origin_pos) <= 14.0);
+    if app.origin_drag || response.dragged() {
         ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+    } else if hover_origin {
+        ui.ctx().set_cursor_icon(CursorIcon::Grab);
     } else if response.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
     }
@@ -143,6 +194,10 @@ fn handle_input(ui: &Ui, app: &mut PbcCam, response: &Response, rect: Rect) {
             .hover_pos()
             .map(|pointer| app.view.screen_to_world(pointer, rect)),
     );
+}
+
+fn origin_screen_pos(view: &ViewState, rect: Rect, origin: Point) -> Pos2 {
+    view.world_to_screen(pos2(origin.x as f32, origin.y as f32), rect)
 }
 
 fn draw_layer(
@@ -739,6 +794,31 @@ fn draw_message_card(
     );
 
     card
+}
+
+fn draw_gcode_origin(painter: &Painter, rect: Rect, view: &ViewState, origin: Point, active: bool) {
+    let center = view.world_to_screen(pos2(origin.x as f32, origin.y as f32), rect);
+    if !rect.expand(12.0).contains(center) {
+        return;
+    }
+    let color = if active {
+        theme::TASK_OVERLAY
+    } else {
+        theme::COPPER_BRIGHT
+    };
+    let stroke = Stroke::new(if active { 1.8 } else { 1.2 }, color);
+    painter.circle_stroke(center, 7.0, stroke);
+    painter.line_segment([center - vec2(11.0, 0.0), center - vec2(4.0, 0.0)], stroke);
+    painter.line_segment([center + vec2(4.0, 0.0), center + vec2(11.0, 0.0)], stroke);
+    painter.line_segment([center - vec2(0.0, 11.0), center - vec2(0.0, 4.0)], stroke);
+    painter.line_segment([center + vec2(0.0, 4.0), center + vec2(0.0, 11.0)], stroke);
+    painter.text(
+        center + vec2(12.0, -10.0),
+        Align2::LEFT_BOTTOM,
+        "G0",
+        FontId::monospace(10.0),
+        color,
+    );
 }
 
 fn draw_overlays(painter: &Painter, rect: Rect, app: &PbcCam) {
