@@ -11,6 +11,4 @@ authors.workspace = true
 geo = "0.33"
 gerber_parser.workspace = true
 serde.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true

@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::geometry::{Bounds, LayerGeometry, Point};
 use crate::layer::{Layer, LayerId, SourceFormat, suggest_color};
 use crate::operation::{Operation, OperationId, OperationKind};
@@ -11,7 +13,7 @@ use crate::units::Unit;
 pub const UNTITLED_PROJECT: &str = "Untitled";
 
 /// A PCB CAM project: source layers and an ordered task timeline.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     name: String,
     layers: Vec<Layer>,
@@ -193,6 +195,20 @@ impl Project {
         id
     }
 
+    /// Point every task that uses `from` at another machining tool.
+    pub fn remap_tool(&mut self, from: crate::ToolId, to: crate::ToolId) {
+        for operation in &mut self.operations {
+            match operation.kind_mut() {
+                OperationKind::Drill(task) if task.tool == from => task.tool = to,
+                OperationKind::SpotDrill(task) if task.tool == from => task.tool = to,
+                OperationKind::HoleMill(task) if task.tool == from => task.tool = to,
+                OperationKind::Cutout(task) if task.tool == from => task.tool = to,
+                OperationKind::Engrave(task) if task.tool == from => task.tool = to,
+                _ => {}
+            }
+        }
+    }
+
     /// Remove an operation. Returns `true` when it existed.
     pub fn remove_operation(&mut self, id: OperationId) -> bool {
         let before = self.operations.len();
@@ -369,6 +385,18 @@ mod tests {
         assert!((bounds.width() - 1.0).abs() < 1e-9);
         project.set_layer_visible(right, false);
         assert!(project.bounds(true).is_none());
+    }
+
+    #[test]
+    fn tasks_can_be_remapped_to_another_tool() {
+        let mut project = Project::default();
+        let layer = project.add_layer("A", None, None, layer());
+        let task = project.add_operation(
+            "one",
+            OperationKind::Drill(DrillOperation::new(layer, ToolId::new(1))),
+        );
+        project.remap_tool(ToolId::new(1), ToolId::new(7));
+        assert_eq!(project.operation(task).unwrap().tool(), ToolId::new(7));
     }
 
     #[test]

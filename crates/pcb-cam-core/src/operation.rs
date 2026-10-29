@@ -5,13 +5,15 @@
 
 use std::collections::BTreeSet;
 
+use serde::{Deserialize, Serialize};
+
 use crate::Project;
 use crate::geometry::{ExcellonLayer, GerberLayer, LayerGeometry, Path};
 use crate::tool::{Tool, ToolKind};
 use crate::{LayerId, Point, ToolId};
 
 /// Stable identifier of a task inside a [`Project`](crate::Project).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct OperationId(u64);
 
 impl OperationId {
@@ -27,7 +29,7 @@ impl OperationId {
 }
 
 /// Which side of a closed contour the cutter follows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ContourSide {
     /// Keep the original part size and cut outside the contour.
     #[default]
@@ -59,7 +61,7 @@ impl ContourSide {
 }
 
 /// Parameters of a drilling task.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DrillOperation {
     /// Excellon layer that supplies the holes.
     pub layer: LayerId,
@@ -193,7 +195,7 @@ impl DrillOperation {
 ///
 /// Source holes select positions only; the hole diameter is irrelevant. The
 /// default machining tool is a cone/spot drill.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SpotDrillOperation {
     /// Excellon layer that supplies the hole positions.
     pub layer: LayerId,
@@ -254,7 +256,7 @@ impl SpotDrillOperation {
 ///
 /// Unlike drilling, this task may move horizontally: holes larger than the
 /// cutter are helically interpolated and slots are routed.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HoleMillOperation {
     /// Excellon layer that supplies the holes and slots.
     pub layer: LayerId,
@@ -372,7 +374,7 @@ impl HoleMillOperation {
 }
 
 /// Parameters of an edge cut (board outline or an internal cut-out).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CutoutOperation {
     /// Gerber layer that supplies the closed contours.
     pub layer: LayerId,
@@ -443,7 +445,7 @@ impl CutoutOperation {
 }
 
 /// Which side of a closed engraving contour the passes are placed on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum EngraveSide {
     /// Offset passes move outward from the contour.
     #[default]
@@ -482,7 +484,7 @@ impl EngraveSide {
 ///
 /// Engraving follows the paths and polygon outlines found in a Gerber layer:
 /// useful for silkscreen text, legends and shallow decorative fills.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EngraveOperation {
     /// Gerber layer that supplies the paths.
     pub layer: LayerId,
@@ -641,7 +643,7 @@ fn validate_z_and_feeds(
 }
 
 /// The kind-specific parameters of a task.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OperationKind {
     /// Drill all holes and rout all slots in an Excellon layer.
     Drill(DrillOperation),
@@ -702,7 +704,7 @@ impl OperationKind {
 }
 
 /// A single CAM task in the project timeline.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Operation {
     id: OperationId,
     name: String,

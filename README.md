@@ -68,6 +68,8 @@ Implemented:
   - automatic `T… M6` changes between different machining tools
 - Undo/redo for imports, layers and tasks
 - Native file dialogs, drag-and-drop import, Gerber/Excellon ZIP archives and a bundled demo project
+- Versioned `.pcbcam` project files with layers, tasks, G-code origin and a tool-library snapshot
+- Recent-project menu and unsaved-changes confirmation for quit, new and open
 - GUI-independent core crate and a command-driven engine crate
 - Cross-platform CI builds and a macOS application bundle script
 
@@ -104,7 +106,7 @@ Next:
 - Contour offsets use mitred joins without a full self-intersection cleanup.
 - Clearance follows isolation routing: all copper primitives are unioned first, then buffered by the explicit copper offset for each pass, bounded by a clearance boundary. By default the boundary is the bounding box of visible layers; any Gerber layer can be selected instead. Its largest closed contour is used, or its bounds when it has no closed contour. With a boundary, the work region is the boundary inset by Outline offset. Each pass subtracts the copper clearance from the work region, emits the holes and nested island contours of the remaining region, and adds the outer contour when copper reaches the boundary; work region is stepped inward by Offset step for the next pass. New tasks default to: outline offset = tool radius, copper offset = tool radius, offset step = tool diameter. Tool width is not used by the path builder; the explicit offsets control the geometry. Traces ending inside pads therefore do not produce separate circles inside the pad; Outside expands the copper, Inside cuts into it.
 - Slots narrower than the machining tool are rejected; wider slots are routed on the centreline, which may not clear the full slot width.
-- Projects are not saved yet; the machining tool library is persisted, generated G-code is the durable output.
+- Project files are JSON (`.pcbcam`, version 1). Loading merges missing machining tools into the shared library; conflicting tool definitions are cloned under a new id and task references are remapped. Recent files are stored in the application settings; quit/new/open prompt to save pending changes.
 - G-code is emitted in millimetres with explicit drill/plunge moves. Coordinates are relative to the selected G-code 0-point; machine-specific headers and cutter compensation are not yet supported.
 
 ## Requirements
@@ -154,31 +156,36 @@ The script builds a release binary, assembles `PCB-CAM.app` with the app icon an
 
 ## Working with tools and tasks
 
-1. Import Gerber layers with **File → Import Gerber…** or the **Gerber** toolbar button.
-2. Import an Excellon file with **File → Import Excellon…** or the **Excellon** button.
-3. Or import a whole fabrication archive with **File → Import Gerber ZIP…**, the **ZIP** toolbar button, or by dropping a `.zip` on the window. Gerber and Excellon entries are imported automatically; README/order-instruction files are skipped.
-4. Select a layer to inspect its **Source tools** in the browser and inspector.
+1. Import with **File → Import…** (`Cmd/Ctrl+Shift+O`), the **Import** toolbar
+   button, or by dropping files on the window. The importer detects Gerber,
+   Excellon and ZIP archives from the content and extension automatically.
+   ZIP archives import every Gerber/Excellon entry; README and order-instruction
+   files are skipped.
+2. Select a layer to inspect its **Source tools** in the browser and inspector.
    These are read-only and come from the fabrication file.
-5. Open **Machining tools → + Machining tool** to add your own cutter, or select
+3. Open **Machining tools → + Machining tool** to add your own cutter, or select
    a library tool and use **Edit tool…** in the inspector. The library is saved
    automatically in the application settings.
-6. Add a task from **+ Task** in the toolbar/timeline or from the browser when a
+4. Add a task from **+ Task** in the toolbar/timeline or from the browser when a
    suitable layer is selected:
    - **Drilling** needs an Excellon layer and a matching drill bit; it only plunges vertically.
    - **Hole milling** needs an Excellon layer and an end mill/V-bit; it can helically interpolate larger holes and route slots.
    - **Spot drill** needs an Excellon layer with holes; it punches only hole centres with a Cone tool.
    - **Edge cut** needs a Gerber layer with closed contours. KiCad-style Edge.Cuts files made of separate line and arc strokes are joined automatically.
    - **Clearance** needs a Gerber layer with paths.
-7. Select the task. Edit it directly in the inspector: choose one
+5. Select the task. Edit it directly in the inspector: choose one
    **machining tool**, check the **source tools** for drilling/hole milling/spot drilling, and change
    depths/feeds. Changes are applied online; there is no separate task-edit dialog.
    While selected, the task is drawn in red on the canvas — drilling positions
    for drill tasks, or the offset/clearance trajectory for milling tasks.
-8. Set the G-code zero point with **0-point** in the toolbar. Enter absolute
+6. Set the G-code zero point with **0-point** in the toolbar. Enter absolute
    X/Y values, drag the `G0` marker on the canvas, or use **Pick on canvas**.
    Double-clicking the marker reopens the value dialog. All exported
    coordinates are written relative to that point.
-9. Export:
+7. **File → Save Project** (or **Save Project As…**) stores a `.pcbcam` file;
+   **File → Open Project…** restores layers, tasks, the G-code origin and
+   referenced machining tools.
+8. Export:
    - **File → Export Selected Task G-code…** or the inspector's **Export task G-code…** for one task.
    - **File → Export All Tasks G-code…** or the timeline's **Export all G-code** for the combined program with tool changes.
 
@@ -248,8 +255,10 @@ pcb-cam-core  ←  pcb-cam-engine  ←  pcb-cam
 | Shortcut | Action |
 | --- | --- |
 | `Cmd/Ctrl+N` | New project |
-| `Cmd/Ctrl+O` | Import Gerber |
-| `Cmd/Ctrl+Shift+O` | Import Excellon |
+| `Cmd/Ctrl+O` | Open project |
+| `Cmd/Ctrl+S` | Save project |
+| `Cmd/Ctrl+Shift+S` | Save project as |
+| `Cmd/Ctrl+Shift+O` | Import Gerber/Excellon/ZIP |
 | `Cmd/Ctrl+E` | Export selected task G-code |
 | `Cmd/Ctrl+Shift+E` | Export all tasks G-code |
 | `Cmd/Ctrl+Z` | Undo |

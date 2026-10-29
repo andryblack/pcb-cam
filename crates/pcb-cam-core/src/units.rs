@@ -1,7 +1,9 @@
 //! Length units used by PCB fabrication data.
 
+use serde::{Deserialize, Serialize};
+
 /// A length unit used by a project and by imported fabrication files.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Unit {
     /// Millimetres.
     #[default]

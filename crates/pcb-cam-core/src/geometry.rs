@@ -12,9 +12,10 @@ use geo::{
     MultiLineString as GeoMultiLineString, MultiPolygon as GeoMultiPolygon, Point as GeoPoint,
     Polygon as GeoPolygon, unary_union,
 };
+use serde::{Deserialize, Serialize};
 
 /// A point or vector in board space, in millimetres.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct Point {
     /// Horizontal coordinate.
     pub x: f64,
@@ -88,7 +89,7 @@ impl core::ops::Mul<f64> for Point {
 }
 
 /// Axis-aligned bounding box.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Bounds {
     /// Lower-left corner.
     pub min: Point,
@@ -163,7 +164,7 @@ impl Bounds {
 }
 
 /// A connected polyline. `closed` means the last point connects back to the first.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Path {
     /// Vertices in order.
     pub points: Vec<Point>,
@@ -217,7 +218,7 @@ impl Path {
 }
 
 /// Standard Gerber aperture shapes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ApertureShape {
     /// Round pad or round drawing tool.
     Circle { diameter: f64 },
@@ -234,7 +235,7 @@ pub enum ApertureShape {
 }
 
 /// A hole inside a flashed aperture.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ApertureHole {
     /// Round hole.
     Circle { diameter: f64 },
@@ -243,7 +244,7 @@ pub enum ApertureHole {
 }
 
 /// A Gerber aperture.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Aperture {
     /// Outer shape.
     pub shape: ApertureShape,
@@ -352,7 +353,7 @@ impl Aperture {
 }
 
 /// Polarity of a Gerber primitive.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Polarity {
     /// Adds material.
     #[default]
@@ -362,7 +363,7 @@ pub enum Polarity {
 }
 
 /// A flattened Gerber drawing primitive.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Primitive {
     /// A stroked path.
     Stroke {
@@ -437,7 +438,7 @@ pub struct GerberRegion {
 }
 
 /// Parsed Gerber data.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct GerberLayer {
     /// Flattened drawing primitives in file order.
     pub primitives: Vec<Primitive>,
@@ -1027,7 +1028,7 @@ fn normalize(point: Point) -> Point {
 }
 
 /// Tool definition embedded in an Excellon file.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DrillTool {
     /// Tool number (`T1` = 1).
     pub number: u32,
@@ -1036,7 +1037,7 @@ pub struct DrillTool {
 }
 
 /// A drilled hole.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DrillHit {
     /// Hole centre.
     pub position: Point,
@@ -1047,7 +1048,7 @@ pub struct DrillHit {
 }
 
 /// A routed slot.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DrillSlot {
     /// Start of the slot.
     pub start: Point,
@@ -1060,7 +1061,7 @@ pub struct DrillSlot {
 }
 
 /// Parsed Excellon drill/rout data.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ExcellonLayer {
     /// Tools declared in the header.
     pub tools: Vec<DrillTool>,
@@ -1112,7 +1113,7 @@ impl ExcellonLayer {
 }
 
 /// Source geometry attached to a project layer.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LayerGeometry {
     /// A Gerber fabrication layer.
     Gerber(GerberLayer),

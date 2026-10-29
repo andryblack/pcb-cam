@@ -23,32 +23,69 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         .add(Button::new("New Project").shortcut_text(app::SHORTCUT_NEW))
                         .clicked()
                     {
-                        app.new_project();
+                        app.request_new_project(ui.ctx());
                         ui.close();
+                    }
+
+                    if ui
+                        .add(Button::new("Open Project…").shortcut_text(app::SHORTCUT_OPEN))
+                        .clicked()
+                    {
+                        ui.close();
+                        app.open_project_dialog(ui.ctx());
+                    }
+                    ui.menu_button("Open Recent", |ui| {
+                        let recents = app.recent_projects.clone();
+                        if recents.is_empty() {
+                            ui.add_enabled(false, Button::new("No recent projects"));
+                        } else {
+                            for path in recents {
+                                let label = path
+                                    .file_name()
+                                    .map(|name| name.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| path.display().to_string());
+                                if ui
+                                    .button(label)
+                                    .on_hover_text(path.display().to_string())
+                                    .clicked()
+                                {
+                                    app.request_open_project(path, ui.ctx());
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            if ui.button("Clear Recent").clicked() {
+                                app.clear_recent_projects();
+                            }
+                        }
+                    });
+
+                    if ui
+                        .add(Button::new("Save Project").shortcut_text(app::SHORTCUT_SAVE))
+                        .clicked()
+                    {
+                        ui.close();
+                        app.save_project();
+                    }
+                    if ui
+                        .add(Button::new("Save Project As…").shortcut_text(app::SHORTCUT_SAVE_AS))
+                        .clicked()
+                    {
+                        ui.close();
+                        app.save_project_as_dialog();
                     }
 
                     ui.separator();
 
                     if ui
-                        .add(Button::new("Import Gerber…").shortcut_text(app::SHORTCUT_OPEN))
+                        .add(Button::new("Import…").shortcut_text(app::SHORTCUT_IMPORT))
                         .clicked()
                     {
                         ui.close();
-                        app.import_gerber_dialog();
-                    }
-                    if ui
-                        .add(Button::new("Import Excellon…").shortcut_text("Cmd/Ctrl+Shift+O"))
-                        .clicked()
-                    {
-                        ui.close();
-                        app.import_excellon_dialog();
-                    }
-                    if ui.button("Import Gerber ZIP…").clicked() {
-                        ui.close();
-                        app.import_zip_dialog();
+                        app.import_dialog();
                     }
                     if ui.button("Load Demo Project").clicked() {
-                        app.load_demo();
+                        app.request_load_demo(ui.ctx());
                         ui.close();
                     }
 
@@ -86,7 +123,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         .add(Button::new("Quit").shortcut_text(app::SHORTCUT_QUIT))
                         .clicked()
                     {
-                        PbcCam::quit(ui.ctx());
+                        app.request_quit(ui.ctx());
                     }
                 });
 

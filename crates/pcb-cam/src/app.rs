@@ -10,7 +10,7 @@ use eframe::egui::{self, Align2, Button, Key, Modifiers, RichText, Stroke, Vec2,
 use pcb_cam_core::{
     ContourSide, EngraveSide, GerberRegion, LayerGeometry, LayerId, OperationId, OperationKind,
     Path as CamPath, Point, Project, SourceFormat, SourceToolInfo, Task, Tool, ToolId, ToolKind,
-    ToolLibrary, Unit,
+    ToolLibrary, Unit, load_project, save_project,
 };
 use pcb_cam_engine::{Session, find_command};
 use serde_json::{Value, json};
@@ -37,6 +37,21 @@ pub(crate) const SHORTCUT_OPEN: &str = if cfg!(target_os = "macos") {
     "Cmd+O"
 } else {
     "Ctrl+O"
+};
+pub(crate) const SHORTCUT_IMPORT: &str = if cfg!(target_os = "macos") {
+    "Cmd+Shift+O"
+} else {
+    "Ctrl+Shift+O"
+};
+pub(crate) const SHORTCUT_SAVE: &str = if cfg!(target_os = "macos") {
+    "Cmd+S"
+} else {
+    "Ctrl+S"
+};
+pub(crate) const SHORTCUT_SAVE_AS: &str = if cfg!(target_os = "macos") {
+    "Cmd+Shift+S"
+} else {
+    "Ctrl+Shift+S"
 };
 pub(crate) const SHORTCUT_QUIT: &str = if cfg!(target_os = "macos") {
     "Cmd+Q"
@@ -465,6 +480,15 @@ pub(crate) struct OriginDialog {
     pub(crate) y: f64,
 }
 
+/// Deferred action waiting for unsaved-change confirmation.
+#[derive(Debug, Clone)]
+pub(crate) enum PendingAction {
+    Quit,
+    NewProject,
+    OpenProject(PathBuf),
+    LoadDemo,
+}
+
 /// Top-level application state.
 #[derive(Debug)]
 pub struct PbcCam {
@@ -485,6 +509,10 @@ pub struct PbcCam {
     pub(crate) origin_dialog: Option<OriginDialog>,
     pub(crate) origin_drag: bool,
     pub(crate) origin_preview: Option<Point>,
+    project_path: Option<PathBuf>,
+    pub(crate) pending_action: Option<PendingAction>,
+    allow_close: bool,
+    pub(crate) recent_projects: Vec<PathBuf>,
     window_title: String,
 }
 
@@ -516,6 +544,15 @@ impl PbcCam {
             );
         }
 
+        let recent_projects: Vec<PathBuf> = cc
+            .storage
+            .and_then(|storage| storage.get_string("recent_projects"))
+            .and_then(|json| serde_json::from_str::<Vec<PathBuf>>(&json).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|path| path.is_file())
+            .collect();
+
         Self {
             session,
             view: ViewState::default(),
@@ -534,6 +571,10 @@ impl PbcCam {
             origin_dialog: None,
             origin_drag: false,
             origin_preview: None,
+            project_path: None,
+            pending_action: None,
+            allow_close: false,
+            recent_projects,
             window_title: WINDOW_TITLE.to_owned(),
         }
     }
@@ -585,10 +626,88 @@ impl PbcCam {
         {
             self.selection = None;
             self.task_draft = None;
+            self.project_path = None;
+            self.origin_pick = false;
+            self.origin_dialog = None;
+            self.origin_drag = false;
+            self.origin_preview = None;
+            self.render_cache.clear();
             self.view.reset();
             self.fit_requested = false;
             self.set_status("New project created");
         }
+    }
+
+    pub(crate) fn request_quit(&mut self, ctx: &egui::Context) {
+        self.request_action(PendingAction::Quit, ctx);
+    }
+
+    pub(crate) fn request_new_project(&mut self, ctx: &egui::Context) {
+        self.request_action(PendingAction::NewProject, ctx);
+    }
+
+    pub(crate) fn request_load_demo(&mut self, ctx: &egui::Context) {
+        self.request_action(PendingAction::LoadDemo, ctx);
+    }
+
+    pub(crate) fn request_open_project(&mut self, path: PathBuf, ctx: &egui::Context) {
+        self.request_action(PendingAction::OpenProject(path), ctx);
+    }
+
+    fn request_action(&mut self, action: PendingAction, ctx: &egui::Context) {
+        if self.session.dirty() {
+            self.pending_action = Some(action);
+            self.origin_dialog = None;
+            self.origin_pick = false;
+            self.origin_drag = false;
+            self.origin_preview = None;
+        } else {
+            self.apply_action(action, ctx);
+        }
+    }
+
+    fn apply_action(&mut self, action: PendingAction, ctx: &egui::Context) {
+        self.pending_action = None;
+        match action {
+            PendingAction::Quit => {
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            PendingAction::NewProject => self.new_project(),
+            PendingAction::OpenProject(path) => {
+                self.open_project(path);
+            }
+            PendingAction::LoadDemo => self.load_demo(),
+        }
+    }
+
+    fn handle_close_request(&mut self, ctx: &egui::Context) {
+        let close_requested = ctx.input(|input| input.viewport().close_requested());
+        if !close_requested || self.allow_close {
+            return;
+        }
+        if self.pending_action.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            return;
+        }
+        if self.session.dirty() {
+            self.pending_action = Some(PendingAction::Quit);
+            self.origin_dialog = None;
+            self.origin_pick = false;
+            self.origin_drag = false;
+            self.origin_preview = None;
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+    }
+
+    pub(crate) fn add_recent_project(&mut self, path: &Path) {
+        self.recent_projects.retain(|recent| recent != path);
+        self.recent_projects.insert(0, path.to_path_buf());
+        self.recent_projects.truncate(10);
+    }
+
+    pub(crate) fn clear_recent_projects(&mut self) {
+        self.recent_projects.clear();
     }
 
     pub(crate) fn undo(&mut self) {
@@ -645,29 +764,135 @@ impl PbcCam {
         }
     }
 
-    pub(crate) fn import_gerber_dialog(&mut self) {
-        let Some(path) = file_dialog("Import Gerber", "Gerber", SourceFormat::Gerber.extensions())
+    pub(crate) fn open_project_dialog(&mut self, ctx: &egui::Context) {
+        let Some(path) = file_dialog("Open Project", "PCB-CAM project", &["pcbcam"]) else {
+            return;
+        };
+        self.request_open_project(path, ctx);
+    }
+
+    pub(crate) fn open_project(&mut self, path: PathBuf) -> bool {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                self.set_error(format!("Cannot read {}: {error}", path.display()));
+                return false;
+            }
+        };
+        let mut loaded = match load_project(&text) {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                self.set_error(format!("Cannot open {}: {error}", path.display()));
+                return false;
+            }
+        };
+        let mut library = self.session.tool_library().clone();
+        for tool in loaded.tools.tools() {
+            match library.tool(tool.id()) {
+                Some(existing) if existing == tool => {}
+                _ => {
+                    let id = library.add(
+                        tool.name().to_owned(),
+                        tool.kind(),
+                        tool.diameter_mm(),
+                        tool.feed_mm_min(),
+                        tool.plunge_mm_min(),
+                        tool.spindle_rpm(),
+                    );
+                    loaded.project.remap_tool(tool.id(), id);
+                }
+            }
+        }
+        self.session.set_tool_library(library);
+        self.session.load_project(loaded.project);
+        self.project_path = Some(path.clone());
+        self.add_recent_project(&path);
+        self.selection = None;
+        self.task_draft = None;
+        self.origin_pick = false;
+        self.origin_dialog = None;
+        self.origin_drag = false;
+        self.origin_preview = None;
+        self.render_cache.clear();
+        self.fit_requested = true;
+        self.set_status(format!("Opened {}", path.display()));
+        true
+    }
+
+    pub(crate) fn save_project(&mut self) -> bool {
+        if let Some(path) = self.project_path.clone() {
+            self.save_project_to(path)
+        } else {
+            self.save_project_as_dialog()
+        }
+    }
+
+    pub(crate) fn save_project_as_dialog(&mut self) -> bool {
+        let base: String = self
+            .project()
+            .name()
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let base = base.trim_matches('_');
+        let base = if base.is_empty() { "board" } else { base };
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Save Project")
+            .add_filter("PCB-CAM project", &["pcbcam"])
+            .set_file_name(format!("{base}.pcbcam"))
+            .save_file()
+        else {
+            return false;
+        };
+        let path = if path.extension().is_none() {
+            path.with_extension("pcbcam")
+        } else {
+            path
+        };
+        self.save_project_to(path)
+    }
+
+    pub(crate) fn save_project_to(&mut self, path: PathBuf) -> bool {
+        let text = match save_project(self.project(), self.session.tool_library()) {
+            Ok(text) => text,
+            Err(error) => {
+                self.set_error(format!("Cannot save project: {error}"));
+                return false;
+            }
+        };
+        if let Err(error) = std::fs::write(&path, text) {
+            self.set_error(format!("Cannot write {}: {error}", path.display()));
+            return false;
+        }
+        self.project_path = Some(path.clone());
+        self.add_recent_project(&path);
+        self.session.mark_clean();
+        self.set_status(format!("Saved {}", path.display()));
+        true
+    }
+
+    pub(crate) fn import_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Import fabrication files")
+            .add_filter(
+                "PCB fabrication files",
+                &[
+                    "zip", "gbr", "ger", "gtl", "gbl", "gts", "gbs", "gto", "gbo", "gko", "gdl",
+                    "gm1", "gtp", "gbp", "gba", "gta", "drl", "xln", "exc", "nc", "txt",
+                ],
+            )
+            .add_filter("All files", &["*"])
+            .pick_file()
         else {
             return;
         };
         self.import_path(path);
-    }
-
-    pub(crate) fn import_excellon_dialog(&mut self) {
-        let Some(path) = file_dialog(
-            "Import Excellon",
-            "Excellon",
-            SourceFormat::Excellon.extensions(),
-        ) else {
-            return;
-        };
-        self.import_path(path);
-    }
-    pub(crate) fn import_zip_dialog(&mut self) {
-        let Some(path) = file_dialog("Import Gerber ZIP", "ZIP archive", &["zip"]) else {
-            return;
-        };
-        self.import_zip(path);
     }
 
     /// Import every Gerber/Excellon file contained in a ZIP archive.
@@ -693,6 +918,8 @@ impl PbcCam {
             .unwrap_or_else(|| "Imported PCB".to_owned());
         if self.project().layers().is_empty() && self.project().tasks().is_empty() {
             let _ = self.run_command("project.new", json!({"name": zip_name}));
+            self.project_path = None;
+            self.render_cache.clear();
         }
 
         let mut imported = 0usize;
@@ -794,29 +1021,44 @@ impl PbcCam {
     }
 
     pub(crate) fn import_path(&mut self, path: PathBuf) {
-        if path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
-        {
+        if is_zip_file(&path) {
             self.import_zip(path);
             return;
         }
-        let Some(format) = SourceFormat::from_path(&path) else {
-            self.set_error(format!(
-                "Unknown file type: {}",
-                path.file_name()
-                    .map(|name| name.to_string_lossy())
-                    .unwrap_or_default()
-            ));
-            return;
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                self.set_error(format!("Cannot read {}: {error}", path.display()));
+                return;
+            }
         };
-        let id = match format {
-            SourceFormat::Gerber => "file.import_gerber",
-            SourceFormat::Excellon => "file.import_excellon",
+        let preferred = sniff_source_format(&text).or_else(|| SourceFormat::from_path(&path));
+        let formats = match preferred {
+            Some(format) => {
+                let other = match format {
+                    SourceFormat::Gerber => SourceFormat::Excellon,
+                    SourceFormat::Excellon => SourceFormat::Gerber,
+                };
+                [Some(format), Some(other)]
+            }
+            None => [Some(SourceFormat::Gerber), Some(SourceFormat::Excellon)],
         };
-        if let Some(value) = self.run_command(id, json!({"path": path})) {
-            self.apply_import_result(format, &value);
+        for format in formats.into_iter().flatten() {
+            let id = match format {
+                SourceFormat::Gerber => "file.import_gerber",
+                SourceFormat::Excellon => "file.import_excellon",
+            };
+            if let Some(value) = self.run_command(id, json!({"path": path})) {
+                self.apply_import_result(format, &value);
+                return;
+            }
         }
+        self.set_error(format!(
+            "Could not import {} as Gerber or Excellon",
+            path.file_name()
+                .map(|name| name.to_string_lossy())
+                .unwrap_or_default()
+        ));
     }
 
     pub(crate) fn import_content(
@@ -1192,6 +1434,10 @@ impl PbcCam {
             return;
         }
         self.selection = None;
+        self.project_path = None;
+        self.render_cache.clear();
+        self.origin_pick = false;
+        self.origin_dialog = None;
         if !self.import_content(SourceFormat::Gerber, top, "Demo Top Copper") {
             return;
         }
@@ -1275,6 +1521,7 @@ impl PbcCam {
                 task_ids.push(OperationId::new(id));
             }
         }
+        self.project_path = None;
         self.selection = task_ids
             .get(1)
             .or_else(|| task_ids.last())
@@ -1282,6 +1529,67 @@ impl PbcCam {
             .map(Selection::Task);
         self.fit_requested = true;
         self.set_status("Demo loaded — 4 layers, 4 tasks, source filters and machining tools");
+    }
+
+    fn show_unsaved_dialog(&mut self, ctx: &egui::Context) {
+        let Some(action) = self.pending_action.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut save = false;
+        let mut discard = false;
+        let mut cancel = false;
+        let target = match &action {
+            PendingAction::Quit => "before quitting",
+            PendingAction::NewProject => "before creating a new project",
+            PendingAction::OpenProject(_) => "before opening another project",
+            PendingAction::LoadDemo => "before loading the demo",
+        };
+
+        egui::Window::new("Unsaved changes")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(380.0)
+            .frame(dialog_frame())
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "Project `{}` has unsaved changes.",
+                        self.project().name()
+                    ))
+                    .size(12.0)
+                    .color(theme::TEXT),
+                );
+                ui.label(
+                    RichText::new(format!("Save them {target}?"))
+                        .size(11.0)
+                        .color(theme::TEXT_MUTED),
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        save = true;
+                    }
+                    if ui.button("Discard").clicked() {
+                        discard = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if save {
+            if self.save_project() {
+                self.apply_action(action, ctx);
+            }
+        } else if discard {
+            self.apply_action(action, ctx);
+        } else if cancel || !open {
+            self.pending_action = None;
+        }
     }
 
     fn show_origin_dialog(&mut self, ctx: &egui::Context) {
@@ -1372,14 +1680,10 @@ impl PbcCam {
         }
     }
 
-    pub(crate) fn quit(ctx: &egui::Context) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-    }
-
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         // Cmd+Q is the one shortcut that must work even while editing text.
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Q)) {
-            Self::quit(ctx);
+            self.request_quit(ctx);
             return;
         }
 
@@ -1394,6 +1698,7 @@ impl PbcCam {
             self.about_open = false;
             self.shortcuts_open = false;
             self.task_draft = None;
+            self.pending_action = None;
             self.origin_dialog = None;
             self.origin_preview = None;
             self.origin_drag = false;
@@ -1413,13 +1718,19 @@ impl PbcCam {
         }
 
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::O)) {
-            self.import_excellon_dialog();
+            self.import_dialog();
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::S)) {
+            self.save_project_as_dialog();
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
+            self.save_project();
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)) {
-            self.import_gerber_dialog();
+            self.open_project_dialog(ctx);
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)) {
-            self.new_project();
+            self.request_new_project(ctx);
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z))
             || ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Y))
@@ -1449,6 +1760,7 @@ impl PbcCam {
     }
 
     fn show_dialogs(&mut self, ctx: &egui::Context) {
+        self.show_unsaved_dialog(ctx);
         self.show_origin_dialog(ctx);
 
         if self.about_open {
@@ -1535,8 +1847,10 @@ impl PbcCam {
                 .show(ctx, |ui| {
                     shortcut_section(ui, "Project");
                     shortcut_row(ui, SHORTCUT_NEW, "New project");
-                    shortcut_row(ui, SHORTCUT_OPEN, "Import Gerber");
-                    shortcut_row(ui, "Cmd/Ctrl+Shift+O", "Import Excellon");
+                    shortcut_row(ui, SHORTCUT_OPEN, "Open project");
+                    shortcut_row(ui, SHORTCUT_SAVE, "Save project");
+                    shortcut_row(ui, SHORTCUT_SAVE_AS, "Save project as");
+                    shortcut_row(ui, SHORTCUT_IMPORT, "Import Gerber, Excellon or ZIP");
                     shortcut_row(ui, "Cmd/Ctrl+E", "Export selected task G-code");
                     shortcut_row(ui, "Cmd/Ctrl+Shift+E", "Export all tasks G-code");
                     shortcut_row(ui, SHORTCUT_QUIT, "Quit");
@@ -1860,6 +2174,7 @@ fn spindle_row(ui: &mut egui::Ui, spindle: &mut u32) {
 
 impl eframe::App for PbcCam {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.handle_close_request(ui.ctx());
         self.handle_shortcuts(ui.ctx());
         self.sync_window_title(ui.ctx());
 
@@ -1903,7 +2218,37 @@ impl eframe::App for PbcCam {
         if let Ok(json) = serde_json::to_string(self.session.tool_library()) {
             storage.set_string("machining_tool_library", json);
         }
+        if let Ok(json) = serde_json::to_string(&self.recent_projects) {
+            storage.set_string("recent_projects", json);
+        }
     }
+}
+
+fn sniff_source_format(text: &str) -> Option<SourceFormat> {
+    let upper = text.to_ascii_uppercase();
+    let gerber_markers = ["%FS", "%MO", "%ADD", "G04", "M02*", "D10*", "D01*"];
+    let excellon_markers = ["M48", "METRIC", "INCH,", "INCH\n", "T1C", "T01C"];
+    let gerber = gerber_markers.iter().any(|marker| upper.contains(marker));
+    let excellon = excellon_markers.iter().any(|marker| upper.contains(marker));
+    match (gerber, excellon) {
+        (true, false) => Some(SourceFormat::Gerber),
+        (false, true) => Some(SourceFormat::Excellon),
+        _ => None,
+    }
+}
+
+fn is_zip_file(path: &Path) -> bool {
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+    {
+        return true;
+    }
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+    bytes.starts_with(b"PK\x03\x04")
 }
 
 fn skip_zip_entry(name: &str) -> bool {
@@ -2008,6 +2353,19 @@ fn file_dialog(title: &str, filter: &str, extensions: &[&str]) -> Option<PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_sniffs_fabrication_formats() {
+        assert_eq!(
+            sniff_source_format("%FSLAX46Y46*%\n%MOMM*%\nG04 test*\nM02*"),
+            Some(SourceFormat::Gerber)
+        );
+        assert_eq!(
+            sniff_source_format("M48\nMETRIC\nT1C0.8\n%\nT1\nX1.0Y2.0\nM30"),
+            Some(SourceFormat::Excellon)
+        );
+        assert_eq!(sniff_source_format("hello"), None);
+    }
 
     #[test]
     fn zip_entries_are_classified_by_extension_and_content() {

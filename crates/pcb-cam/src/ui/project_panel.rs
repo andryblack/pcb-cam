@@ -203,27 +203,15 @@ fn layer_list(ui: &mut Ui, app: &mut PbcCam) {
 }
 
 fn import_buttons(ui: &mut Ui, app: &mut PbcCam) {
-    let width = (ui.available_width() - 6.0) / 2.0;
-    ui.horizontal(|ui| {
-        if ui
-            .add_sized(
-                egui::vec2(width.min(110.0), 25.0),
-                Button::new(RichText::new("+ Gerber").size(11.0)),
-            )
-            .clicked()
-        {
-            app.import_gerber_dialog();
-        }
-        if ui
-            .add_sized(
-                egui::vec2(width.min(110.0), 25.0),
-                Button::new(RichText::new("+ Excellon").size(11.0)),
-            )
-            .clicked()
-        {
-            app.import_excellon_dialog();
-        }
-    });
+    if ui
+        .add_sized(
+            egui::vec2(ui.available_width(), 25.0),
+            Button::new(RichText::new("+ Import").size(11.0)),
+        )
+        .clicked()
+    {
+        app.import_dialog();
+    }
 }
 
 fn source_tools_visible(app: &PbcCam) -> bool {

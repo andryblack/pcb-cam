@@ -162,6 +162,16 @@ impl Session {
         self.dirty
     }
 
+    /// Load a project and clear history (used by project file loading).
+    pub fn load_project(&mut self, project: Project) {
+        self.replace_project(project);
+    }
+
+    /// Mark the current project as saved.
+    pub fn mark_clean(&mut self) {
+        self.dirty = false;
+    }
+
     /// Replace the project and clear history (used by `project.new`).
     pub(crate) fn replace_project(&mut self, project: Project) {
         self.project = Arc::new(project);
@@ -202,6 +212,20 @@ mod tests {
         assert!(!session.can_undo());
         assert!(!session.can_redo());
         assert!(!session.dirty());
+    }
+
+    #[test]
+    fn loading_project_resets_history_and_dirty() {
+        let mut session = Session::new();
+        session
+            .execute("units.set", &serde_json::json!({"units": "in"}))
+            .unwrap();
+        assert!(session.dirty());
+        session.load_project(Project::new("Loaded"));
+        assert_eq!(session.project().name(), "Loaded");
+        assert!(!session.dirty());
+        assert!(!session.can_undo());
+        assert!(!session.can_redo());
     }
 
     #[test]

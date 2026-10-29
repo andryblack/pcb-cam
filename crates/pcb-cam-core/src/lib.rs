@@ -14,6 +14,7 @@ pub mod operation;
 pub mod tool;
 
 mod layer;
+pub mod persist;
 mod project;
 mod units;
 
@@ -25,6 +26,7 @@ pub use operation::{
     HoleMillOperation, HoleMillTask, Operation, OperationId, OperationKind, SpotDrillOperation,
     SpotDrillTask, Task, TaskId, TaskKind,
 };
+pub use persist::{LoadedProject, load_project, save_project};
 pub use project::{Project, UNTITLED_PROJECT};
 pub use tool::{Tool, ToolId, ToolKind, ToolLibrary};
 pub use units::Unit;

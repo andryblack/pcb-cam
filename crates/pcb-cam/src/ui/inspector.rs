@@ -27,8 +27,7 @@ enum InspectorAction {
     AddSpotDrill,
     AddCutout,
     AddEngrave,
-    ImportGerber,
-    ImportExcellon,
+    Import,
     PickOrigin,
     EditOrigin,
 }
@@ -108,8 +107,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         Some(InspectorAction::AddSpotDrill) => app.add_spot_drill_task(),
         Some(InspectorAction::AddCutout) => app.add_cutout_task(),
         Some(InspectorAction::AddEngrave) => app.add_engrave_task(),
-        Some(InspectorAction::ImportGerber) => app.import_gerber_dialog(),
-        Some(InspectorAction::ImportExcellon) => app.import_excellon_dialog(),
+        Some(InspectorAction::Import) => app.import_dialog(),
         Some(InspectorAction::PickOrigin) => {
             app.origin_pick = true;
             app.set_status("Click the canvas to place the G-code 0-point");
@@ -177,26 +175,15 @@ fn project_overview(ui: &mut Ui, app: &PbcCam, action: &mut Option<InspectorActi
     });
 
     ui.add_space(10.0);
-    ui.horizontal(|ui| {
-        if ui
-            .add_sized(
-                vec2((ui.available_width() - 6.0) / 2.0, 25.0),
-                Button::new(RichText::new("+ Gerber").size(11.0)),
-            )
-            .clicked()
-        {
-            *action = Some(InspectorAction::ImportGerber);
-        }
-        if ui
-            .add_sized(
-                vec2((ui.available_width() - 6.0) / 2.0, 25.0),
-                Button::new(RichText::new("+ Excellon").size(11.0)),
-            )
-            .clicked()
-        {
-            *action = Some(InspectorAction::ImportExcellon);
-        }
-    });
+    if ui
+        .add_sized(
+            vec2(ui.available_width(), 25.0),
+            Button::new(RichText::new("+ Import").size(11.0)),
+        )
+        .clicked()
+    {
+        *action = Some(InspectorAction::Import);
+    }
 }
 
 fn layer_details(ui: &mut Ui, app: &PbcCam, id: LayerId, action: &mut Option<InspectorAction>) {

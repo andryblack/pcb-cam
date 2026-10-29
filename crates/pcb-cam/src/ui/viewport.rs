@@ -704,7 +704,7 @@ fn draw_empty_state(painter: &Painter, rect: Rect) -> Rect {
         painter,
         rect,
         "No fabrication data",
-        "Import Gerber copper, outline or silkscreen layers",
+        "Import Gerber, Excellon or ZIP fabrication files",
         "and an Excellon drill file to start the job.",
         "PCB-CAM  /  GERBER + EXCELLON  >  CNC",
     )

@@ -15,7 +15,7 @@ eframe = { version = "0.37.0", features = ["persistence"] }
 env_logger = { version = "0.11.8", default-features = false, features = ["auto-color", "humantime"] }
 log = "0.4.28"
 rfd = "0.17.2"
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 thiserror = "2.0"
 gerber_parser = "0.5.0"

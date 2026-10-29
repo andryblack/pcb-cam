@@ -1,6 +1,8 @@
 //! Layer and source-format definitions.
 
 use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use std::collections::BTreeMap;
@@ -9,7 +11,7 @@ use crate::geometry::{Bounds, LayerGeometry, Primitive};
 use crate::tool::ToolKind;
 
 /// Stable identifier of a layer inside a [`Project`](crate::Project).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct LayerId(u64);
 
 impl LayerId {
@@ -25,7 +27,7 @@ impl LayerId {
 }
 
 /// File format a layer was imported from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SourceFormat {
     /// Gerber RS-274X / X2 fabrication data.
     Gerber,
@@ -67,7 +69,7 @@ impl SourceFormat {
 }
 
 /// A single source layer in a project.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layer {
     id: LayerId,
     name: String,

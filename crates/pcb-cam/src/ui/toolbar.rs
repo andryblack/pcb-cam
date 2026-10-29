@@ -64,23 +64,11 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                 ui.add_space(4.0);
                 ui.separator();
 
-                let gerber = ui
-                    .add(Button::new(RichText::new("Gerber").size(11.5)))
-                    .on_hover_text("Import a Gerber layer (Cmd/Ctrl+O)");
-                if gerber.clicked() {
-                    app.import_gerber_dialog();
-                }
-                let excellon = ui
-                    .add(Button::new(RichText::new("Excellon").size(11.5)))
-                    .on_hover_text("Import an Excellon drill file (Cmd/Ctrl+Shift+O)");
-                if excellon.clicked() {
-                    app.import_excellon_dialog();
-                }
-                let zip = ui
-                    .add(Button::new(RichText::new("ZIP").size(11.5)))
-                    .on_hover_text("Import a Gerber/Excellon ZIP archive");
-                if zip.clicked() {
-                    app.import_zip_dialog();
+                let import = ui
+                    .add(Button::new(RichText::new("Import").size(11.5)))
+                    .on_hover_text("Import Gerber, Excellon or a ZIP archive");
+                if import.clicked() {
+                    app.import_dialog();
                 }
 
                 ui.menu_button(RichText::new("+ Task").size(11.5), |ui| {
