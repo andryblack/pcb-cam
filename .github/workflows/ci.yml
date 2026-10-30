@@ -26,6 +26,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Check release version
+        run: python3 scripts/version.py check
+
       - name: Install Linux GUI dependencies
         run: |
           sudo apt-get update

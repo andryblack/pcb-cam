@@ -28,31 +28,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Check tag matches the workspace version
+      - name: Check release version
         id: meta
         shell: bash
         run: |
           set -euo pipefail
 
-          tag="${GITHUB_REF_NAME}"
-          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
-            echo "error: tag '$tag' must look like vMAJOR.MINOR.PATCH (optionally -suffix)" >&2
-            exit 1
-          fi
-
-          version="${BASH_REMATCH[1]}"
-          crate_version="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
-          if [[ -z "$crate_version" ]]; then
-            echo "error: could not read workspace.package.version from Cargo.toml" >&2
-            exit 1
-          fi
-          if [[ "$version" != "$crate_version" ]]; then
-            echo "error: tag '$tag' does not match workspace version '$crate_version'" >&2
-            exit 1
-          fi
-
+          version="$(python3 scripts/version.py check "$GITHUB_REF_NAME")"
           test -s LICENSE
-          test -s THIRD_PARTY_LICENSES.md
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if [[ "$version" == *-* ]]; then

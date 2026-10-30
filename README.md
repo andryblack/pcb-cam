@@ -147,15 +147,28 @@ archive path.
 
 Releases are published by
 [`.github/workflows/release.yml`](.github/workflows/release.yml) when a tag
-named `vMAJOR.MINOR.PATCH` is pushed. The tag must match
-`workspace.package.version` in `Cargo.toml`; otherwise the workflow fails
-before building anything. Versions with a `-suffix` are published as
-pre-releases.
+named `vMAJOR.MINOR.PATCH` is pushed. The tag must match the workspace version;
+`scripts/version.py` keeps every version copy in sync and validates them.
 
 ```bash
-git tag -a v0.1.0 -m "PCB-CAM 0.1.0"
-git push origin v0.1.0
+VERSION=0.1.1   # next version, without the leading v
+./scripts/version.py bump "$VERSION"
+./scripts/version.py check "v$VERSION"
+
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+
+git commit -am "chore: release $VERSION"
+git tag -a "v$VERSION" -m "PCB-CAM $VERSION"
+git push origin master "v$VERSION"
 ```
+
+`version.py bump` updates `Cargo.toml`, `Cargo.lock`, the macOS bundle
+metadata, the README/AGENTS status lines and the workspace entries in
+`THIRD_PARTY_LICENSES.md`. `version.py check` runs in CI and in the release
+workflow, so a tag that does not match the manifest cannot publish a release.
+Versions with a `-suffix` are published as pre-releases.
 
 Every release contains:
 
@@ -273,7 +286,7 @@ to pan. Double-click the 3D view to fit the toolpath.
 ├── THIRD_PARTY_LICENSES.md      # generated third-party and font notices
 ├── assets/                      # icon and synthetic demo files
 ├── docs/                        # screenshot
-├── scripts/                     # license generation, icons and platform packaging
+├── scripts/                     # license generation, icons, version bumps and packaging
 ├── third-party/
 │   └── fonts.md                 # handwritten font notices
 └── .github/workflows/           # CI and tag-driven releases

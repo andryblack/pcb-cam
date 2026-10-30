@@ -45,18 +45,22 @@ cargo test -p pcb-cam-engine --test samples   # end-to-end demo smoke test
 ### Packaging and assets
 
 ```bash
+./scripts/version.py bump 0.1.1         # update every version reference
+./scripts/version.py check              # CI and release validation run this
 ./scripts/package-linux.sh              # Linux only; versioned tar.gz in dist/
 pwsh -File scripts/package-windows.ps1  # Windows only; versioned zip in dist/
 ./scripts/package-macos.sh --universal  # macOS; universal app bundle and zip in dist/
 python3 scripts/gen_icons.py            # needs Pillow; rewrites assets/icon.*
 ```
 
-Releases are tag-driven: pushing a `vX.Y.Z` tag runs
-`.github/workflows/release.yml`. The tag must equal
-`workspace.package.version`; the workflow builds Linux (Ubuntu 22.04), Windows
-and a universal macOS bundle, then attaches the archives and `SHA256SUMS.txt`
-to the GitHub Release. Versions with a `-suffix` are published as pre-releases.
-Only push a release tag after CI is green.
+Releases are tag-driven: run `./scripts/version.py bump X.Y.Z`, commit the
+result, then push a matching `vX.Y.Z` tag. The release workflow builds Linux
+(Ubuntu 22.04), Windows and a universal macOS bundle, then attaches the archives
+and `SHA256SUMS.txt` to the GitHub Release. `./scripts/version.py check` (also
+run by CI) verifies `Cargo.toml`, `Cargo.lock`, the bundle metadata,
+README/AGENTS and the workspace entries in `THIRD_PARTY_LICENSES.md`; the
+release workflow rejects a tag that does not match. Versions with a `-suffix`
+are published as pre-releases. Only push a release tag after CI is green.
 
 ### Licenses
 
@@ -68,7 +72,8 @@ cargo install --locked cargo-about --version 0.9.3 --features cli
 
 - `THIRD_PARTY_LICENSES.md` is generated from `Cargo.lock`; do not edit it by
   hand. Font-specific notices are maintained in `third-party/fonts.md` and are
-  appended by the script.
+  appended by the script. `scripts/version.py bump` updates only the workspace
+  version entries; run `gen-licenses.sh` when dependencies change.
 - `about.toml` is the license allow-list. Do not add a dependency whose only
   option is GPL, LGPL, AGPL, MPL or another copyleft license without an explicit
   decision; dual-licensed crates may use their permissive option.
@@ -135,10 +140,11 @@ pcb-cam-core  ←  pcb-cam-engine  ←  pcb-cam
 
 - [README.md](README.md) is the public entry point. Update it when commands,
   user-facing behaviour or known limitations change.
-- Version comes from `workspace.package.version`; the milestone label also
-  appears in `crates/pcb-cam/src/ui/menu.rs`, the About dialog and the README
-  status. Keep them in sync on release, including the cargo-bundle
-  `[package.metadata.bundle]` version in `crates/pcb-cam/Cargo.toml`.
+- Version comes from `workspace.package.version`. Run
+  `./scripts/version.py bump X.Y.Z` on release; it updates the cargo-bundle
+  metadata, `Cargo.lock`, README/AGENTS and the generated notice entries.
+  `./scripts/version.py check` rejects drift. The milestone label in
+  `crates/pcb-cam/src/ui/menu.rs` and the About dialog is updated separately.
 - Keep `docs/` limited to images referenced by documentation. Currently that is
   only `docs/preview.png`; do not add unreferenced screenshots or stale assets.
 - Keep `assets/samples/README.md` in sync when the demo files or demo tasks
