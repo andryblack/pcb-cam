@@ -19,7 +19,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "assets"
@@ -67,6 +67,28 @@ def render_svg(chrome: str) -> Image.Image:
         return Image.open(out).convert("RGBA")
 
 
+def trim(master: Image.Image) -> Image.Image:
+    """Crop to the drawn artwork and pad back to a centred square."""
+    art = master.crop(master.split()[3].getbbox())
+    side = max(art.size)
+    square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    square.paste(art, ((side - art.width) // 2, (side - art.height) // 2), art)
+    return square
+
+
+def macos_body(master: Image.Image, canvas: int = 1024) -> Image.Image:
+    """Fit the artwork to Apple's icon grid: an 824/1024 body centred on the canvas.
+
+    The squircle silhouette lives in the SVG itself, so no extra mask is applied
+    here — masking would clip the artwork's own frame.
+    """
+    body = round(canvas * 824 / 1024)
+    art = master.crop(master.split()[3].getbbox()).resize((body, body), Image.LANCZOS)
+    out = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
+    out.paste(art, ((canvas - body) // 2, (canvas - body) // 2), art)
+    return out
+
+
 def make_icns(master: Image.Image) -> bool:
     iconset = ASSETS / "icon.iconset"
     shutil.rmtree(iconset, ignore_errors=True)
@@ -107,14 +129,14 @@ def main() -> None:
     if chrome is None:
         sys.exit("Google Chrome not found; install it or pass a renderer")
 
-    master = render_svg(chrome).resize((SIZE, SIZE), Image.LANCZOS)
+    master = trim(render_svg(chrome)).resize((SIZE, SIZE), Image.LANCZOS)
     master.save(ASSETS / "icon.png")
     master.save(
         ASSETS / "icon.ico",
         sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
     wrote = "assets/icon.svg -> assets/icon.png, assets/icon.ico"
-    if platform.system() == "Darwin" and make_icns(master):
+    if platform.system() == "Darwin" and make_icns(macos_body(master)):
         wrote += ", assets/icon.icns"
     print(wrote)
 

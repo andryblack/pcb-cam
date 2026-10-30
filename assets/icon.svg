@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1254" height="1254" viewBox="0 0 1254 1254">
 <defs>
-  <clipPath id="iconClip"><rect x="75.0" y="56.0" width="1104.0" height="1122.0" rx="232.0"/></clipPath>
+  <clipPath id="iconClip"><path d="M323.40 75.00 H930.60 A248.40 248.40 0 0 1 1179.00 323.40 V930.60 A248.40 248.40 0 0 1 930.60 1179.00 H323.40 A248.40 248.40 0 0 1 75.00 930.60 V323.40 A248.40 248.40 0 0 1 323.40 75.00 Z"/></clipPath>
   <linearGradient id="frameGrad" x1="0" y1="0" x2="0.18" y2="1"><stop offset="0.00" stop-color="#d3fdfe"/><stop offset="0.10" stop-color="#8ff2ea"/><stop offset="0.26" stop-color="#35cfc1"/><stop offset="0.50" stop-color="#0b9a92"/><stop offset="0.76" stop-color="#037a74"/><stop offset="1.00" stop-color="#025f5c"/></linearGradient>
   <linearGradient id="bgWall" x1="0" y1="0" x2="0.15" y2="1">
     <stop offset="0" stop-color="#0b2727"/>
@@ -14,8 +14,10 @@
   <filter id="neonBlur" x="-20%" y="-20%" width="140%" height="140%">
     <feGaussianBlur stdDeviation="10"/>
   </filter>
-  <linearGradient id="railTop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#eef2f5"/><stop offset="1" stop-color="#b6c0c7"/></linearGradient>  <linearGradient id="railFace" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9aa5ad"/><stop offset="1" stop-color="#6f7a83"/></linearGradient><linearGradient id="cuBoardIcon" x1="0" y1="0" x2="0.4" y2="1"><stop offset="0" stop-color="#f7c98f"/><stop offset="1" stop-color="#f7c98f"/></linearGradient><linearGradient id="tableGrad" x1="0.1" y1="0" x2="0.6" y2="1"><stop offset="0" stop-color="#3d4a52"/><stop offset="0.55" stop-color="#2a353c"/><stop offset="1" stop-color="#1c242a"/></linearGradient></defs>
+  <linearGradient id="railTop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#eef2f5"/><stop offset="1" stop-color="#b6c0c7"/></linearGradient>  <linearGradient id="railFace" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9aa5ad"/><stop offset="1" stop-color="#6f7a83"/></linearGradient><linearGradient id="cuBoardIcon" x1="0" y1="0" x2="0.4" y2="1"><stop offset="0" stop-color="#f7c98f"/><stop offset="1" stop-color="#f7c98f"/></linearGradient><linearGradient id="tableGrad" x1="0.1" y1="0" x2="0.6" y2="1"><stop offset="0" stop-color="#3d4a52"/><stop offset="0.55" stop-color="#2a353c"/><stop offset="1" stop-color="#1c242a"/></linearGradient><clipPath id="innerClip"><path d="M323.40 89.00 H930.60 A234.40 234.40 0 0 1 1165.00 323.40 V930.60 A234.40 234.40 0 0 1 930.60 1165.00 H323.40 A234.40 234.40 0 0 1 89.00 930.60 V323.40 A234.40 234.40 0 0 1 323.40 89.00 Z"/></clipPath>
+</defs>
 <g clip-path="url(#iconClip)">
+<g clip-path="url(#innerClip)">
   <rect x="75.0" y="56.0" width="1104.0" height="1122.0" rx="232.0" fill="#0a1a20"/>
     <g id="background">
       <rect x="75" y="56" width="1104" height="1122" rx="232" fill="url(#bgWall)"/>
@@ -839,9 +841,12 @@
     <path fill="#fec88c" d="M637.83 742.85l-0.5 0.48l-0.49 0.44l0.49 -0.48l0.5 -0.44z"/>
   </g>
 </g>
+</g>
   <g id="frame">
-    <rect x="89.0" y="70.0" width="1076.0" height="1094.0" rx="218.0" fill="none" stroke="url(#frameGrad)" stroke-width="28.0"/>
-    <rect x="89.0" y="70.0" width="1076.0" height="1094.0" rx="218.0" fill="none" stroke="#eafffd" stroke-width="1.5" opacity="0.28"/>
-    <rect x="105.0" y="86.0" width="1044.0" height="1062.0" rx="202.0" fill="none" stroke="#04080b" stroke-width="6"/>
+    
+    <path d="M323.40 89.00 H930.60 A234.40 234.40 0 0 1 1165.00 323.40 V930.60 A234.40 234.40 0 0 1 930.60 1165.00 H323.40 A234.40 234.40 0 0 1 89.00 930.60 V323.40 A234.40 234.40 0 0 1 323.40 89.00 Z" fill="none" stroke="url(#frameGrad)" stroke-width="30.8"/>
+    <path d="M323.40 103.00 H930.60 A220.40 220.40 0 0 1 1151.00 323.40 V930.60 A220.40 220.40 0 0 1 930.60 1151.00 H323.40 A220.40 220.40 0 0 1 103.00 930.60 V323.40 A220.40 220.40 0 0 1 323.40 103.00 Z" fill="none" stroke="#04080b" stroke-width="10"/>
+    <path d="M323.40 89.00 H930.60 A234.40 234.40 0 0 1 1165.00 323.40 V930.60 A234.40 234.40 0 0 1 930.60 1165.00 H323.40 A234.40 234.40 0 0 1 89.00 930.60 V323.40 A234.40 234.40 0 0 1 323.40 89.00 Z" fill="none" stroke="#eafffd" stroke-width="1.5" opacity="0.28"/>
+    
   </g>
 </svg>
