@@ -59,6 +59,25 @@ impl Point {
         Self::new(self.x + delta.x, self.y + delta.y)
     }
 
+    /// Mirror the point around `pivot`.
+    ///
+    /// `horizontal` mirrors left/right (inverts X) and `vertical` mirrors
+    /// top/bottom (inverts Y). Setting both produces a 180° rotation.
+    pub fn mirrored(self, pivot: Self, horizontal: bool, vertical: bool) -> Self {
+        Self::new(
+            if horizontal {
+                2.0 * pivot.x - self.x
+            } else {
+                self.x
+            },
+            if vertical {
+                2.0 * pivot.y - self.y
+            } else {
+                self.y
+            },
+        )
+    }
+
     /// Whether both components are finite.
     pub fn is_finite(self) -> bool {
         self.x.is_finite() && self.y.is_finite()
@@ -216,6 +235,13 @@ impl Path {
     pub fn is_drawable(&self) -> bool {
         self.points.len() >= 2
     }
+
+    /// Mirror every vertex around `pivot`.
+    pub fn mirror(&mut self, pivot: Point, horizontal: bool, vertical: bool) {
+        for point in &mut self.points {
+            *point = point.mirrored(pivot, horizontal, vertical);
+        }
+    }
 }
 
 /// Standard Gerber aperture shapes.
@@ -295,6 +321,26 @@ impl Aperture {
             ApertureShape::Polygon {
                 diameter, vertices, ..
             } => format!("polygon {vertices} × Ø{diameter:.2} mm"),
+        }
+    }
+
+    /// Mirror the aperture's own rotation.
+    ///
+    /// Circle, rectangle and obround shapes are symmetric around their axes,
+    /// so only regular polygons need their vertex phase adjusted. Applying
+    /// both axes leaves the shape rotation unchanged.
+    fn mirror(&mut self, horizontal: bool, vertical: bool) {
+        let ApertureShape::Polygon {
+            rotation_degrees, ..
+        } = &mut self.shape
+        else {
+            return;
+        };
+        if horizontal {
+            *rotation_degrees = -*rotation_degrees;
+        }
+        if vertical {
+            *rotation_degrees = -*rotation_degrees;
         }
     }
 
@@ -484,6 +530,46 @@ impl GerberLayer {
     /// Number of top-level drawing primitives.
     pub fn object_count(&self) -> usize {
         self.primitives.len()
+    }
+
+    /// Mirror all primitives around `pivot`.
+    ///
+    /// Gerber arcs are already flattened to polylines at import time. Flash
+    /// rotations are adjusted so rectangle, obround and polygon apertures
+    /// keep their shape after the mirror.
+    pub fn flip(&mut self, horizontal: bool, vertical: bool, pivot: Point) {
+        if !horizontal && !vertical {
+            return;
+        }
+        for primitive in &mut self.primitives {
+            match primitive {
+                Primitive::Stroke { path, aperture, .. } => {
+                    path.mirror(pivot, horizontal, vertical);
+                    aperture.mirror(horizontal, vertical);
+                }
+                Primitive::Flash {
+                    position,
+                    aperture,
+                    rotation_degrees,
+                    ..
+                } => {
+                    *position = position.mirrored(pivot, horizontal, vertical);
+                    aperture.mirror(horizontal, vertical);
+                    if horizontal {
+                        *rotation_degrees = 180.0 - *rotation_degrees;
+                    }
+                    if vertical {
+                        *rotation_degrees = -*rotation_degrees;
+                    }
+                    *rotation_degrees = normalize_degrees(*rotation_degrees);
+                }
+                Primitive::Region { contours, .. } => {
+                    for contour in contours {
+                        contour.mirror(pivot, horizontal, vertical);
+                    }
+                }
+            }
+        }
     }
 
     /// Union all dark primitives, subtract clear primitives, and return the
@@ -1137,6 +1223,17 @@ fn normalize(point: Point) -> Point {
     }
 }
 
+/// Normalise an angle in degrees to the `(-180, 180]` range.
+fn normalize_degrees(degrees: f64) -> f64 {
+    let mut degrees = degrees % 360.0;
+    if degrees <= -180.0 {
+        degrees += 360.0;
+    } else if degrees > 180.0 {
+        degrees -= 360.0;
+    }
+    degrees
+}
+
 /// Tool definition embedded in an Excellon file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DrillTool {
@@ -1220,6 +1317,20 @@ impl ExcellonLayer {
             .find(|tool| tool.number == number)
             .map(|tool| tool.diameter_mm)
     }
+
+    /// Mirror all drill hits and routed slots around `pivot`.
+    pub fn flip(&mut self, horizontal: bool, vertical: bool, pivot: Point) {
+        if !horizontal && !vertical {
+            return;
+        }
+        for hole in &mut self.holes {
+            hole.position = hole.position.mirrored(pivot, horizontal, vertical);
+        }
+        for slot in &mut self.slots {
+            slot.start = slot.start.mirrored(pivot, horizontal, vertical);
+            slot.end = slot.end.mirrored(pivot, horizontal, vertical);
+        }
+    }
 }
 
 /// Source geometry attached to a project layer.
@@ -1237,6 +1348,14 @@ impl LayerGeometry {
         match self {
             Self::Gerber(layer) => layer.bounds(),
             Self::Excellon(layer) => layer.bounds(),
+        }
+    }
+
+    /// Mirror the layer geometry around `pivot`.
+    pub fn flip(&mut self, horizontal: bool, vertical: bool, pivot: Point) {
+        match self {
+            Self::Gerber(layer) => layer.flip(horizontal, vertical, pivot),
+            Self::Excellon(layer) => layer.flip(horizontal, vertical, pivot),
         }
     }
 
@@ -1444,5 +1563,125 @@ mod tests {
                 .iter()
                 .all(|point| (point.distance(Point::new(5.0, 5.0)) - 5.0).abs() < 0.1)
         );
+    }
+
+    #[test]
+    fn gerber_flip_mirrors_strokes_flashes_and_regions() {
+        let mut layer = GerberLayer::default();
+        layer.primitives.push(Primitive::Stroke {
+            path: Path::new(vec![Point::new(0.0, 0.0), Point::new(10.0, 0.0)]),
+            aperture: Aperture::circle(0.3),
+            polarity: Polarity::Dark,
+        });
+        layer.primitives.push(Primitive::Flash {
+            position: Point::new(2.0, 1.0),
+            aperture: Aperture::circle(2.0),
+            rotation_degrees: 30.0,
+            polarity: Polarity::Dark,
+        });
+        layer.primitives.push(Primitive::Region {
+            contours: vec![Path::closed(vec![
+                Point::new(0.0, 0.0),
+                Point::new(2.0, 0.0),
+                Point::new(2.0, 2.0),
+            ])],
+            polarity: Polarity::Dark,
+        });
+
+        layer.flip(true, false, Point::new(5.0, 0.0));
+
+        match &layer.primitives[0] {
+            Primitive::Stroke { path, .. } => {
+                assert_eq!(
+                    path.points,
+                    vec![Point::new(10.0, 0.0), Point::new(0.0, 0.0)]
+                );
+            }
+            _ => panic!("expected stroke"),
+        }
+        match &layer.primitives[1] {
+            Primitive::Flash {
+                position,
+                rotation_degrees,
+                ..
+            } => {
+                assert_eq!(*position, Point::new(8.0, 1.0));
+                assert_eq!(*rotation_degrees, 150.0);
+            }
+            _ => panic!("expected flash"),
+        }
+        match &layer.primitives[2] {
+            Primitive::Region { contours, .. } => {
+                assert_eq!(
+                    contours[0].points,
+                    vec![
+                        Point::new(10.0, 0.0),
+                        Point::new(8.0, 0.0),
+                        Point::new(8.0, 2.0),
+                    ]
+                );
+            }
+            _ => panic!("expected region"),
+        }
+    }
+
+    #[test]
+    fn excellon_flip_mirrors_holes_and_slots() {
+        let mut layer = ExcellonLayer {
+            tools: vec![DrillTool {
+                number: 1,
+                diameter_mm: 1.0,
+            }],
+            holes: vec![DrillHit {
+                position: Point::new(2.0, 1.0),
+                tool: 1,
+                diameter_mm: 1.0,
+            }],
+            slots: vec![DrillSlot {
+                start: Point::new(1.0, 2.0),
+                end: Point::new(3.0, 4.0),
+                tool: 1,
+                diameter_mm: 1.0,
+            }],
+            source_units: None,
+            warnings: Vec::new(),
+        };
+
+        layer.flip(false, true, Point::new(0.0, 5.0));
+
+        assert_eq!(layer.holes[0].position, Point::new(2.0, 9.0));
+        assert_eq!(layer.slots[0].start, Point::new(1.0, 8.0));
+        assert_eq!(layer.slots[0].end, Point::new(3.0, 6.0));
+    }
+
+    #[test]
+    fn polygon_aperture_keeps_its_shape_after_a_mirror() {
+        let aperture = Aperture {
+            shape: ApertureShape::Polygon {
+                diameter: 10.0,
+                vertices: 5,
+                rotation_degrees: 12.0,
+            },
+            hole: None,
+        };
+        let centre = Point::new(3.0, 4.0);
+        let rotation = 27.0;
+        let before = aperture.outline(centre, rotation);
+
+        let mut mirrored = aperture.clone();
+        mirrored.mirror(true, false);
+        let after = mirrored.outline(centre, 180.0 - rotation);
+
+        for point in before
+            .iter()
+            .map(|point| point.mirrored(centre, true, false))
+        {
+            assert!(
+                after
+                    .iter()
+                    .any(|candidate| candidate.distance(point) < 1e-9),
+                "mirrored polygon vertex {point:?} is missing from {after:?}"
+            );
+        }
     }
 }

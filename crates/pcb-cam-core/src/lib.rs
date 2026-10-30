@@ -28,7 +28,7 @@ pub use operation::{
     SpotDrillTask, Task, TaskId, TaskKind,
 };
 pub use persist::{LoadedProject, load_project, save_project};
-pub use project::{Project, UNTITLED_PROJECT};
+pub use project::{FlipAxes, Project, UNTITLED_PROJECT};
 pub use tool::{MachiningDefaults, Tool, ToolId, ToolKind, ToolLibrary};
 pub use units::Unit;
 

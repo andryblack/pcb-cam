@@ -4,9 +4,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use pcb_cam_core::{
-    ContourSide, CutoutOperation, DrillOperation, EngraveOperation, EngraveSide, HoleMillOperation,
-    LayerGeometry, LayerId, Operation, OperationId, OperationKind, Point, Project,
-    SpotDrillOperation, ToolId, ToolKind, UNTITLED_PROJECT, generate_all_gcode,
+    ContourSide, CutoutOperation, DrillOperation, EngraveOperation, EngraveSide, FlipAxes,
+    HoleMillOperation, LayerGeometry, LayerId, Operation, OperationId, OperationKind, Point,
+    Project, SpotDrillOperation, ToolId, ToolKind, UNTITLED_PROJECT, generate_all_gcode,
     generate_task_gcode, parse_excellon, parse_gerber,
 };
 use serde::Deserialize;
@@ -43,6 +43,23 @@ struct LayerVisibleParams {
 struct LayerRenameParams {
     id: u64,
     name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LayerFlipParams {
+    id: Option<u64>,
+    #[serde(default)]
+    all: bool,
+    #[serde(default)]
+    horizontal: bool,
+    #[serde(default)]
+    vertical: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct FlipAxesParams {
+    x: f64,
+    y: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -329,6 +346,58 @@ pub(crate) fn layer_rename(session: &mut Session, params: &Value) -> Result<Valu
     Ok(json!({"id": params.id, "name": layer.name()}))
 }
 
+pub(crate) fn layer_flip(session: &mut Session, params: &Value) -> Result<Value, String> {
+    let params: LayerFlipParams = parse_params(params)?;
+    if !params.horizontal && !params.vertical {
+        return Err("choose horizontal, vertical, or both axes".into());
+    }
+
+    let project = session.project();
+    let ids: Vec<LayerId> = if params.all {
+        project.layers().iter().map(|layer| layer.id()).collect()
+    } else {
+        let id = params
+            .id
+            .map(LayerId::new)
+            .ok_or_else(|| "provide a layer id or set `all` to true".to_owned())?;
+        if project.layer(id).is_none() {
+            return Err(format!("layer {} does not exist", id.value()));
+        }
+        vec![id]
+    };
+    if ids.is_empty() {
+        return Err("the project has no layers to flip".into());
+    }
+
+    let count = session
+        .project_mut()
+        .flip_layers(&ids, params.horizontal, params.vertical);
+    if count == 0 {
+        return Err("cannot determine flip axes for empty geometry".into());
+    }
+    let axes = session
+        .project()
+        .flip_axes()
+        .ok_or_else(|| "flip axes were not created".to_owned())?;
+
+    Ok(json!({
+        "layers": ids.iter().map(|id| id.value()).collect::<Vec<_>>(),
+        "count": count,
+        "horizontal": params.horizontal,
+        "vertical": params.vertical,
+        "axes": {"x": axes.x, "y": axes.y},
+        "bounds": bounds_json(session.project().bounds(false)),
+    }))
+}
+
+pub(crate) fn layer_flip_enabled(session: &Session) -> Result<(), String> {
+    if session.project().layers().is_empty() {
+        Err("import a layer first".into())
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn layer_remove(session: &mut Session, params: &Value) -> Result<Value, String> {
     let params: LayerIdParams = parse_params(params)?;
     if !session.project_mut().remove_layer(LayerId::new(params.id)) {
@@ -359,6 +428,20 @@ pub(crate) fn project_set_gcode_origin(
     session
         .project_mut()
         .set_gcode_origin(Point::new(params.x, params.y));
+    Ok(json!({"x": params.x, "y": params.y}))
+}
+
+pub(crate) fn project_set_flip_axes(
+    session: &mut Session,
+    params: &Value,
+) -> Result<Value, String> {
+    let params: FlipAxesParams = parse_params(params)?;
+    if !session
+        .project_mut()
+        .set_flip_axes(FlipAxes::new(params.x, params.y))
+    {
+        return Err("flip axes must be finite".into());
+    }
     Ok(json!({"x": params.x, "y": params.y}))
 }
 
@@ -1640,6 +1723,123 @@ M30
         assert!(text.contains("X10.000 Y10.000"));
         assert!(text.contains("M30"));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn layer_flip_mirrors_drills_and_is_undoable() {
+        let mut session = Session::new();
+        let import = session
+            .execute(
+                "file.import_excellon",
+                &json!({"content": EXCELLON, "name": "Drills"}),
+            )
+            .unwrap();
+        let layer = import["layer"].as_u64().unwrap();
+
+        let flipped = session
+            .execute("layer.flip", &json!({"id": layer, "horizontal": true}))
+            .unwrap();
+        assert_eq!(flipped["count"], 1);
+        assert_eq!(flipped["axes"]["x"], 15.0);
+        assert_eq!(flipped["axes"]["y"], 10.0);
+
+        let LayerGeometry::Excellon(excellon) = session
+            .project()
+            .layer(LayerId::new(layer))
+            .unwrap()
+            .geometry()
+        else {
+            panic!("expected Excellon layer");
+        };
+        assert_eq!(excellon.holes[0].position, Point::new(20.0, 10.0));
+        assert_eq!(excellon.holes[1].position, Point::new(10.0, 10.0));
+
+        session.execute("edit.undo", &json!({})).unwrap();
+        assert!(session.project().flip_axes().is_none());
+        let LayerGeometry::Excellon(excellon) = session
+            .project()
+            .layer(LayerId::new(layer))
+            .unwrap()
+            .geometry()
+        else {
+            panic!("expected Excellon layer");
+        };
+        assert_eq!(excellon.holes[0].position, Point::new(10.0, 10.0));
+
+        session.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(
+            session.project().flip_axes(),
+            Some(FlipAxes::new(15.0, 10.0))
+        );
+        let LayerGeometry::Excellon(excellon) = session
+            .project()
+            .layer(LayerId::new(layer))
+            .unwrap()
+            .geometry()
+        else {
+            panic!("expected Excellon layer");
+        };
+        assert_eq!(excellon.holes[0].position, Point::new(20.0, 10.0));
+    }
+
+    #[test]
+    fn flip_axes_can_be_moved_and_rederive_geometry() {
+        let mut session = Session::new();
+        let import = session
+            .execute(
+                "file.import_excellon",
+                &json!({"content": EXCELLON, "name": "Drills"}),
+            )
+            .unwrap();
+        let layer = import["layer"].as_u64().unwrap();
+        session
+            .execute("layer.flip", &json!({"id": layer, "horizontal": true}))
+            .unwrap();
+
+        session
+            .execute("project.set_flip_axes", &json!({"x": 20.0, "y": 10.0}))
+            .unwrap();
+        let LayerGeometry::Excellon(excellon) = session
+            .project()
+            .layer(LayerId::new(layer))
+            .unwrap()
+            .geometry()
+        else {
+            panic!("expected Excellon layer");
+        };
+        assert_eq!(excellon.holes[0].position, Point::new(30.0, 10.0));
+        assert_eq!(excellon.holes[1].position, Point::new(20.0, 10.0));
+
+        session.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(
+            session.project().flip_axes(),
+            Some(FlipAxes::new(15.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn layer_flip_requires_an_axis_and_a_target() {
+        let mut session = Session::new();
+        let error = session
+            .execute("layer.flip", &json!({"all": true, "horizontal": true}))
+            .unwrap_err();
+        assert!(error.to_string().contains("layer"));
+
+        let import = session
+            .execute(
+                "file.import_excellon",
+                &json!({"content": EXCELLON, "name": "Drills"}),
+            )
+            .unwrap();
+        let layer = import["layer"].as_u64().unwrap();
+        let error = session
+            .execute("layer.flip", &json!({"id": layer}))
+            .unwrap_err();
+        assert!(error.to_string().contains("horizontal"));
+        let error = session
+            .execute("layer.flip", &json!({"horizontal": true}))
+            .unwrap_err();
+        assert!(error.to_string().contains("provide"));
     }
 
     #[test]

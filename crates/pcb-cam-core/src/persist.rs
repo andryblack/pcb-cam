@@ -92,14 +92,15 @@ fn validate(project: &Project, tools: &ToolLibrary) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::{
-        Aperture, DrillOperation, ExcellonLayer, LayerGeometry, OperationKind, Point, Primitive,
-        ToolId,
+        Aperture, DrillOperation, ExcellonLayer, FlipAxes, LayerGeometry, OperationKind, Point,
+        Primitive, ToolId,
     };
 
     #[test]
     fn project_round_trips() {
         let mut project = Project::new("Round trip");
         project.set_gcode_origin(Point::new(2.0, -3.0));
+        project.set_flip_axes(FlipAxes::new(4.0, -2.0));
         let layer = project.add_layer(
             "Copper",
             None,
@@ -118,6 +119,7 @@ mod tests {
         assert_eq!(loaded.project.operations().len(), 1);
         assert_eq!(loaded.project.operations()[0].id(), task);
         assert_eq!(loaded.project.gcode_origin(), Point::new(2.0, -3.0));
+        assert_eq!(loaded.project.flip_axes(), Some(FlipAxes::new(4.0, -2.0)));
         assert!(text.contains("\"format\": \"pcb-cam-project\""));
     }
 

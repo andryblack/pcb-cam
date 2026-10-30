@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use std::collections::BTreeMap;
 
-use crate::geometry::{Bounds, LayerGeometry, Primitive};
+use crate::geometry::{Bounds, LayerGeometry, Point, Primitive};
 use crate::tool::ToolKind;
 
 /// Stable identifier of a layer inside a [`Project`](crate::Project).
@@ -79,6 +79,12 @@ pub struct Layer {
     color: [u8; 3],
     geometry: Arc<LayerGeometry>,
     bounds: Option<Bounds>,
+    /// Whether the layer is mirrored left/right.
+    #[serde(default)]
+    flip_h: bool,
+    /// Whether the layer is mirrored top/bottom.
+    #[serde(default)]
+    flip_v: bool,
 }
 
 impl Layer {
@@ -103,6 +109,8 @@ impl Layer {
             color,
             geometry: Arc::new(geometry),
             bounds,
+            flip_h: false,
+            flip_v: false,
         }
     }
 
@@ -163,6 +171,72 @@ impl Layer {
     /// Parsed geometry.
     pub fn geometry(&self) -> &LayerGeometry {
         &self.geometry
+    }
+
+    /// Whether the layer is currently mirrored left/right.
+    pub const fn flip_h(&self) -> bool {
+        self.flip_h
+    }
+
+    /// Whether the layer is currently mirrored top/bottom.
+    pub const fn flip_v(&self) -> bool {
+        self.flip_v
+    }
+
+    /// Mirror the layer geometry around `pivot`, refresh its bounds and toggle
+    /// the matching flip flag.
+    pub fn flip(&mut self, horizontal: bool, vertical: bool, pivot: Point) {
+        if !horizontal && !vertical {
+            return;
+        }
+        let geometry = Arc::make_mut(&mut self.geometry);
+        geometry.flip(horizontal, vertical, pivot);
+        self.bounds = geometry.bounds();
+        self.flip_h ^= horizontal;
+        self.flip_v ^= vertical;
+    }
+
+    /// Move an already flipped layer to a new pair of mirror axes.
+    ///
+    /// The current geometry is unflipped around `old_pivot` and flipped around
+    /// `new_pivot` using the same flags, so only the axis position changes.
+    pub fn rebase_flips(&mut self, old_pivot: Point, new_pivot: Point) {
+        if (!self.flip_h && !self.flip_v) || old_pivot == new_pivot {
+            return;
+        }
+        let geometry = Arc::make_mut(&mut self.geometry);
+        geometry.flip(self.flip_h, self.flip_v, old_pivot);
+        geometry.flip(self.flip_h, self.flip_v, new_pivot);
+        self.bounds = geometry.bounds();
+    }
+
+    /// Clone this layer's geometry and derive a shadow copy in `reference`'s
+    /// mirrored frame.
+    ///
+    /// The transform is computed from the two layer flip flags: the boundary's
+    /// own flips are cancelled and the reference layer's flips are applied.
+    /// This is the shadow copy used for a clearance boundary; the boundary
+    /// layer itself stays unchanged.
+    pub fn shadow_geometry(&self, reference: &Layer, pivot: Point) -> LayerGeometry {
+        let horizontal = self.flip_h ^ reference.flip_h;
+        let vertical = self.flip_v ^ reference.flip_v;
+        let mut geometry = (*self.geometry).clone();
+        if horizontal || vertical {
+            geometry.flip(horizontal, vertical, pivot);
+        }
+        geometry
+    }
+
+    /// Whether this layer looks like the board outline, used to choose a stable
+    /// mirror centre when flipping individual bottom-side layers.
+    pub(crate) fn is_board_outline(&self) -> bool {
+        if self.format != SourceFormat::Gerber {
+            return false;
+        }
+        let name = self.name.to_ascii_lowercase();
+        ["edge", "outline", "gm1", "gko", "profile"]
+            .iter()
+            .any(|needle| name.contains(needle))
     }
 
     /// Cached bounding box in millimetres.
@@ -293,6 +367,74 @@ mod tests {
 
     fn empty_gerber() -> LayerGeometry {
         LayerGeometry::Gerber(GerberLayer::default())
+    }
+
+    fn flash_layer(id: u64, name: &str, x: f64, y: f64) -> Layer {
+        let mut gerber = GerberLayer::default();
+        gerber.primitives.push(Primitive::Flash {
+            position: Point::new(x, y),
+            aperture: crate::geometry::Aperture::circle(1.0),
+            rotation_degrees: 0.0,
+            polarity: crate::geometry::Polarity::Dark,
+        });
+        Layer::new(
+            LayerId::new(id),
+            name.to_owned(),
+            None,
+            [1, 2, 3],
+            LayerGeometry::Gerber(gerber),
+        )
+    }
+
+    fn flash_position(geometry: &LayerGeometry) -> Point {
+        let LayerGeometry::Gerber(gerber) = geometry else {
+            panic!("expected Gerber geometry");
+        };
+        let Primitive::Flash { position, .. } = &gerber.primitives[0] else {
+            panic!("expected flash");
+        };
+        *position
+    }
+
+    #[test]
+    fn shadow_geometry_follows_the_reference_layer_flips() {
+        let pivot = Point::new(2.0, 2.0);
+        let mut source = flash_layer(1, "Source", 1.0, 1.0);
+        source.flip(true, false, pivot);
+
+        let mut boundary = flash_layer(2, "Boundary", 1.0, 1.0);
+        boundary.flip(false, true, pivot);
+        assert_eq!(flash_position(boundary.geometry()), Point::new(1.0, 3.0));
+
+        let shadow = boundary.shadow_geometry(&source, pivot);
+        assert_eq!(flash_position(&shadow), Point::new(3.0, 1.0));
+
+        let mut already_flipped = flash_layer(3, "Boundary 2", 1.0, 1.0);
+        already_flipped.flip(true, false, pivot);
+        let shadow = already_flipped.shadow_geometry(&source, pivot);
+        assert_eq!(flash_position(&shadow), Point::new(3.0, 1.0));
+    }
+
+    #[test]
+    fn flip_flags_survive_serialization() {
+        let pivot = Point::new(2.0, 2.0);
+        let mut source = flash_layer(1, "Source", 1.0, 1.0);
+        source.flip(true, false, pivot);
+        assert!(source.flip_h());
+        assert!(!source.flip_v());
+
+        let text = serde_json::to_string(&source).unwrap();
+        let loaded: Layer = serde_json::from_str(&text).unwrap();
+        assert!(loaded.flip_h());
+        assert!(!loaded.flip_v());
+        let boundary = flash_layer(2, "Boundary", 1.0, 1.0);
+        let shadow = boundary.shadow_geometry(&loaded, pivot);
+        assert_eq!(flash_position(&shadow), Point::new(3.0, 1.0));
+
+        let mut toggled = loaded;
+        toggled.flip(true, false, pivot);
+        assert!(!toggled.flip_h());
+        assert_eq!(flash_position(toggled.geometry()), Point::new(1.0, 1.0));
     }
 
     #[test]

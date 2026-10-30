@@ -43,6 +43,14 @@ Implemented:
   - fixed-format and decimal coordinates
   - tool definitions, drill hits, `G85` slots and `M15`/`M16` routed slots
 - Canvas layer rendering with fit-to-project, pan/zoom, grid, axes and scale bar
+- Layer mirroring for bottom-side artwork:
+  - flip the selected layer or all layers horizontally (mirror X), vertically (mirror Y), or both (180°)
+  - each layer stores independent FlipH/FlipV flags; the mirror transform is derived from them
+  - project flip axes are created on the first flip (board-outline centre, or project bounds centre), then stay fixed
+  - the axes are drawn as thin dashed guides; drag them on the canvas or set exact positions from Layer → Set Flip Axes…
+  - moving the axes re-applies existing layer flips; drilling, clearance and edge-cut tasks follow automatically
+  - undoable
+  - a selected clearance-boundary layer is used as a shadow copy with the source layer's flips, so it stays registered without changing the boundary layer itself
 - Correct triangulation of concave Gerber regions (earcutr) instead of convex fan fill
 - Circular-aperture traces with round joins and caps, matching Gerber stroke geometry
 - Layer browser with visibility and selection
@@ -110,6 +118,27 @@ library contains a 0.3 mm drill and a 1.0 mm end mill:
 
 This separation is the point: the source tool says **which objects belong to a
 task**, while the machining tool says **what cutter performs the work**.
+
+### Example: bottom-side artwork
+
+Mirroring prepares artwork for machining the second side of a board:
+
+1. Import the bottom copper, silkscreen and drill layers, plus the board
+   outline. The outline gives the mirror a stable centre.
+2. Choose **Layer → Flip All Layers → Horizontal (mirror X)** to mirror
+   left/right, **Vertical (mirror Y)** to mirror top/bottom, or **Both (180°)**
+   when the board is turned over completely. A single layer can be flipped from
+   the same menu or from the inspector.
+3. Check the canvas: drills, clearance paths and edge-cut toolpaths are
+   regenerated from the mirrored source geometry, so they follow automatically.
+   **Undo** restores the original side.
+
+Without an outline layer the project bounds centre is used for the initial
+axes. The axes are captured on the first flip and afterwards can be dragged on
+the canvas or moved from **Layer → Set Flip Axes…**. Automation clients can use
+the `project.set_flip_axes` command to set them explicitly; moving the axes
+re-applies existing flips. The G-code zero point is not mirrored; set it after
+flipping when the origin must follow the new side.
 
 Next:
 

@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use eframe::egui::{self, Align2, Button, Key, Modifiers, RichText, Stroke, Vec2, vec2};
 use pcb_cam_core::{
-    ContourSide, CopperGeometry, EngraveOperation, EngraveSide, GerberLayer, GerberRegion,
-    LayerGeometry, LayerId, OperationId, OperationKind, Path as CamPath, Point, Project,
-    SourceFormat, SourceToolInfo, Task, Tool, ToolId, ToolKind, ToolLibrary, Unit,
+    ContourSide, CopperGeometry, EngraveOperation, EngraveSide, FlipAxes, GerberLayer,
+    GerberRegion, LayerGeometry, LayerId, OperationId, OperationKind, Path as CamPath, Point,
+    Project, SourceFormat, SourceToolInfo, Task, Tool, ToolId, ToolKind, ToolLibrary, Unit,
     generate_all_gcode, generate_task_gcode, load_project, save_project,
 };
 use pcb_cam_engine::{Session, find_command};
@@ -83,6 +83,15 @@ pub(crate) enum Selection {
     Layer(LayerId),
     Tool(ToolId),
     Task(OperationId),
+}
+
+/// A draggable project flip axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FlipAxis {
+    /// Vertical axis at `FlipAxes::x`, moved left/right.
+    X,
+    /// Horizontal axis at `FlipAxes::y`, moved up/down.
+    Y,
 }
 
 /// Toggles that control the workspace chrome.
@@ -587,6 +596,9 @@ pub struct PbcCam {
     pub(crate) origin_dialog: Option<OriginDialog>,
     pub(crate) origin_drag: bool,
     pub(crate) origin_preview: Option<Point>,
+    pub(crate) flip_axis_drag: Option<FlipAxis>,
+    pub(crate) flip_axes_preview: Option<FlipAxes>,
+    pub(crate) flip_axes_dialog: Option<FlipAxes>,
     project_path: Option<PathBuf>,
     pub(crate) pending_action: Option<PendingAction>,
     allow_close: bool,
@@ -664,6 +676,9 @@ impl PbcCam {
             origin_dialog: None,
             origin_drag: false,
             origin_preview: None,
+            flip_axis_drag: None,
+            flip_axes_preview: None,
+            flip_axes_dialog: None,
             project_path: None,
             pending_action: None,
             allow_close: false,
@@ -725,6 +740,7 @@ impl PbcCam {
             self.origin_dialog = None;
             self.origin_drag = false;
             self.origin_preview = None;
+            self.reset_flip_axes_interaction();
             self.invalidate_geometry_caches();
             self.view.reset();
             self.fit_requested = false;
@@ -755,6 +771,7 @@ impl PbcCam {
             self.origin_pick = false;
             self.origin_drag = false;
             self.origin_preview = None;
+            self.reset_flip_axes_interaction();
         } else {
             self.apply_action(action, ctx);
         }
@@ -790,6 +807,7 @@ impl PbcCam {
             self.origin_pick = false;
             self.origin_drag = false;
             self.origin_preview = None;
+            self.reset_flip_axes_interaction();
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
     }
@@ -823,6 +841,7 @@ impl PbcCam {
     pub(crate) fn open_origin_dialog(&mut self) {
         let origin = self.project().gcode_origin();
         self.origin_pick = false;
+        self.reset_flip_axes_interaction();
         self.origin_dialog = Some(OriginDialog {
             x: origin.x,
             y: origin.y,
@@ -858,6 +877,97 @@ impl PbcCam {
         {
             self.set_status(format!("Display units: {}", units.name()));
         }
+    }
+
+    pub(crate) fn flip_selected_layer(&mut self, horizontal: bool, vertical: bool) {
+        let Some(Selection::Layer(id)) = self.selection else {
+            self.set_error("Select a layer to flip");
+            return;
+        };
+        self.flip_layers(Some(id), horizontal, vertical);
+    }
+
+    pub(crate) fn flip_layer(&mut self, id: LayerId, horizontal: bool, vertical: bool) {
+        self.flip_layers(Some(id), horizontal, vertical);
+    }
+
+    pub(crate) fn flip_all_layers(&mut self, horizontal: bool, vertical: bool) {
+        self.flip_layers(None, horizontal, vertical);
+    }
+
+    fn flip_layers(&mut self, layer: Option<LayerId>, horizontal: bool, vertical: bool) {
+        let layer_name = layer
+            .and_then(|id| self.project().layer(id))
+            .map(|layer| layer.name().to_owned());
+        let mut params = json!({
+            "horizontal": horizontal,
+            "vertical": vertical,
+        });
+        if let Some(id) = layer {
+            params["id"] = json!(id.value());
+        } else {
+            params["all"] = json!(true);
+        }
+
+        let Some(value) = self.run_command("layer.flip", params) else {
+            return;
+        };
+        self.invalidate_geometry_caches();
+
+        let count = value.get("count").and_then(Value::as_u64).unwrap_or(0);
+        let direction = flip_direction(horizontal, vertical);
+        let message = match layer_name {
+            Some(name) => format!("Flipped '{name}' {direction} around the flip axes"),
+            None => format!(
+                "Flipped {count} layer{} {direction} around the flip axes",
+                if count == 1 { "" } else { "s" }
+            ),
+        };
+        self.set_status(message);
+    }
+
+    pub(crate) fn open_flip_axes_dialog(&mut self) {
+        let axes = match self.project().flip_axes() {
+            Some(axes) => axes,
+            None => match self.project().mirror_center() {
+                Some(center) => FlipAxes::new(center.x, center.y),
+                None => {
+                    self.set_error("Import a layer first");
+                    return;
+                }
+            },
+        };
+        self.origin_dialog = None;
+        self.origin_pick = false;
+        self.origin_drag = false;
+        self.origin_preview = None;
+        self.flip_axes_dialog = Some(axes);
+        self.flip_axis_drag = None;
+        self.flip_axes_preview = None;
+    }
+
+    pub(crate) fn set_flip_axes(&mut self, axes: FlipAxes) {
+        if self.project().flip_axes() == Some(axes) {
+            self.reset_flip_axes_interaction();
+            return;
+        }
+        if self
+            .run_command("project.set_flip_axes", json!({"x": axes.x, "y": axes.y}))
+            .is_some()
+        {
+            self.invalidate_geometry_caches();
+            self.reset_flip_axes_interaction();
+            self.set_status(format!(
+                "Flip axes: X {:.3} mm · Y {:.3} mm",
+                axes.x, axes.y
+            ));
+        }
+    }
+
+    fn reset_flip_axes_interaction(&mut self) {
+        self.flip_axis_drag = None;
+        self.flip_axes_preview = None;
+        self.flip_axes_dialog = None;
     }
 
     pub(crate) fn open_project_dialog(&mut self, ctx: &egui::Context) {
@@ -909,6 +1019,7 @@ impl PbcCam {
         self.origin_dialog = None;
         self.origin_drag = false;
         self.origin_preview = None;
+        self.reset_flip_axes_interaction();
         self.invalidate_geometry_caches();
         self.fit_requested = true;
         self.set_status(format!("Opened {}", path.display()));
@@ -1887,6 +1998,82 @@ impl PbcCam {
         }
     }
 
+    fn show_flip_axes_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut axes) = self.flip_axes_dialog else {
+            return;
+        };
+        let mut open = true;
+        let mut submit = false;
+        let mut cancel = false;
+
+        egui::Window::new("Flip axes")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(330.0)
+            .frame(dialog_frame())
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(
+                        "Persistent axes used by every layer flip. They are created on the first flip and do not move on their own.",
+                    )
+                    .size(11.0)
+                    .color(theme::text_muted()),
+                );
+                ui.add_space(8.0);
+                egui::Grid::new("flip_axes_grid")
+                    .num_columns(2)
+                    .spacing(vec2(10.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("Vertical X").color(theme::text_muted()));
+                        ui.add(
+                            egui::DragValue::new(&mut axes.x)
+                                .speed(0.1)
+                                .fixed_decimals(3)
+                                .suffix(" mm"),
+                        )
+                        .on_hover_text("Vertical axis: mirrors left/right");
+                        ui.end_row();
+                        ui.label(RichText::new("Horizontal Y").color(theme::text_muted()));
+                        ui.add(
+                            egui::DragValue::new(&mut axes.y)
+                                .speed(0.1)
+                                .fixed_decimals(3)
+                                .suffix(" mm"),
+                        )
+                        .on_hover_text("Horizontal axis: mirrors top/bottom");
+                        ui.end_row();
+                    });
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new(
+                        "Drag the dashed axes on the canvas to move them; flipped layers follow the new positions.",
+                    )
+                    .size(10.5)
+                    .color(theme::text_faint()),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Set").clicked() {
+                        submit = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if submit {
+            self.set_flip_axes(axes);
+            self.flip_axes_dialog = None;
+        } else if cancel || !open {
+            self.flip_axes_dialog = None;
+        } else {
+            self.flip_axes_dialog = Some(axes);
+        }
+    }
+
     fn sync_window_title(&mut self, ctx: &egui::Context) {
         let dirty = if self.session.dirty() { " *" } else { "" };
         let preview = if self.preview.is_some() {
@@ -1928,6 +2115,7 @@ impl PbcCam {
                 self.origin_dialog = None;
                 self.origin_preview = None;
                 self.origin_drag = false;
+                self.reset_flip_axes_interaction();
                 if self.origin_pick {
                     self.origin_pick = false;
                     self.set_status("G-code 0-point pick cancelled");
@@ -1986,6 +2174,12 @@ impl PbcCam {
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::G)) {
             self.settings.show_grid = !self.settings.show_grid;
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::H)) {
+            self.flip_selected_layer(true, false);
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::V)) {
+            self.flip_selected_layer(false, true);
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete))
             || ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace))
@@ -2049,6 +2243,7 @@ impl PbcCam {
         ui::settings::show(ctx, self);
         self.show_unsaved_dialog(ctx);
         self.show_origin_dialog(ctx);
+        self.show_flip_axes_dialog(ctx);
 
         if self.about_open {
             let mut open = true;
@@ -2148,6 +2343,11 @@ impl PbcCam {
                     shortcut_row(ui, SHORTCUT_UNDO, "Undo");
                     shortcut_row(ui, SHORTCUT_REDO, "Redo");
                     shortcut_row(ui, "Delete", "Remove selected item");
+
+                    ui.add_space(10.0);
+                    shortcut_section(ui, "Layers");
+                    shortcut_row(ui, "Shift+H", "Flip selected layer horizontally (mirror X)");
+                    shortcut_row(ui, "Shift+V", "Flip selected layer vertically (mirror Y)");
 
                     ui.add_space(10.0);
                     shortcut_section(ui, "G-code preview");
@@ -2681,6 +2881,15 @@ pub(crate) fn dialog_frame() -> egui::Frame {
 fn shortcut_section(ui: &mut egui::Ui, title: &str) {
     widgets::section_label(ui, title);
     ui.add_space(3.0);
+}
+
+fn flip_direction(horizontal: bool, vertical: bool) -> &'static str {
+    match (horizontal, vertical) {
+        (true, false) => "horizontally (mirror X)",
+        (false, true) => "vertically (mirror Y)",
+        (true, true) => "both ways (180°)",
+        (false, false) => "",
+    }
 }
 
 fn shortcut_row(ui: &mut egui::Ui, keys: &str, action: &str) {

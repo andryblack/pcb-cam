@@ -12,6 +12,36 @@ use crate::units::Unit;
 /// Default name of an unsaved project.
 pub const UNTITLED_PROJECT: &str = "Untitled";
 
+/// Persistent mirror axes used by layer flips.
+///
+/// `x` is the vertical axis (mirrors left/right); `y` is the horizontal axis
+/// (mirrors top/bottom). Both are created on the first flip and then stay in
+/// place until the user moves them explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FlipAxes {
+    /// X coordinate of the vertical axis.
+    pub x: f64,
+    /// Y coordinate of the horizontal axis.
+    pub y: f64,
+}
+
+impl FlipAxes {
+    /// Create axes at the given coordinates.
+    pub const fn new(x: f64, y: f64) -> Self {
+        Self { x, y }
+    }
+
+    /// The pivot shared by both axis mirrors.
+    pub fn pivot(self) -> Point {
+        Point::new(self.x, self.y)
+    }
+
+    /// Whether both axis coordinates are finite.
+    pub fn is_finite(self) -> bool {
+        self.x.is_finite() && self.y.is_finite()
+    }
+}
+
 /// A PCB CAM project: source layers and an ordered task timeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -20,6 +50,8 @@ pub struct Project {
     operations: Vec<Operation>,
     units: Unit,
     gcode_origin: Point,
+    #[serde(default)]
+    flip_axes: Option<FlipAxes>,
     next_layer_id: u64,
     next_operation_id: u64,
 }
@@ -45,6 +77,7 @@ impl Project {
             operations: Vec::new(),
             units: Unit::Millimeter,
             gcode_origin: Point::default(),
+            flip_axes: None,
             next_layer_id: 1,
             next_operation_id: 1,
         }
@@ -151,6 +184,81 @@ impl Project {
             .filter(|layer| !visible_only || layer.visible())
             .filter_map(Layer::bounds)
             .reduce(Bounds::union)
+    }
+
+    /// Centre used to create the flip axes on the first flip.
+    ///
+    /// A board-outline layer wins when one is present, so flipping a single
+    /// copper or drill layer stays registered with the rest of the board.
+    /// Otherwise the bounding box of all layers is used.
+    pub fn mirror_center(&self) -> Option<Point> {
+        self.layers
+            .iter()
+            .filter(|layer| layer.is_board_outline())
+            .filter_map(Layer::bounds)
+            .reduce(Bounds::union)
+            .or_else(|| self.bounds(false))
+            .map(Bounds::center)
+    }
+
+    /// Persistent mirror axes, created by the first flip operation.
+    pub const fn flip_axes(&self) -> Option<FlipAxes> {
+        self.flip_axes
+    }
+
+    /// Return the project's mirror axes, creating them from the board centre on
+    /// first use.
+    pub fn ensure_flip_axes(&mut self) -> Option<FlipAxes> {
+        if let Some(axes) = self.flip_axes {
+            return Some(axes);
+        }
+        let center = self.mirror_center()?;
+        let axes = FlipAxes::new(center.x, center.y);
+        self.flip_axes = Some(axes);
+        Some(axes)
+    }
+
+    /// Move the mirror axes and re-apply every flipped layer around the new
+    /// axes.
+    ///
+    /// Returns `false` for non-finite coordinates.
+    pub fn set_flip_axes(&mut self, axes: FlipAxes) -> bool {
+        if !axes.is_finite() {
+            return false;
+        }
+        if let Some(old) = self.flip_axes
+            && old != axes
+        {
+            let old_pivot = old.pivot();
+            let new_pivot = axes.pivot();
+            for layer in &mut self.layers {
+                layer.rebase_flips(old_pivot, new_pivot);
+            }
+        }
+        self.flip_axes = Some(axes);
+        true
+    }
+
+    /// Mirror selected layers around the project's [`Self::flip_axes`].
+    ///
+    /// The axes are created from the board centre on first use and then stay
+    /// fixed. Returns the number of layers that were flipped.
+    pub fn flip_layers(&mut self, ids: &[LayerId], horizontal: bool, vertical: bool) -> usize {
+        if ids.is_empty() || (!horizontal && !vertical) {
+            return 0;
+        }
+        let Some(axes) = self.ensure_flip_axes() else {
+            return 0;
+        };
+        let pivot = axes.pivot();
+        let mut flipped = 0;
+        for layer in &mut self.layers {
+            if ids.contains(&layer.id()) {
+                layer.flip(horizontal, vertical, pivot);
+                flipped += 1;
+            }
+        }
+        flipped
     }
 
     /// Number of visible layers.
@@ -307,9 +415,13 @@ mod tests {
     }
 
     fn point_layer(x: f64) -> LayerGeometry {
+        point_layer_at(x, 0.0)
+    }
+
+    fn point_layer_at(x: f64, y: f64) -> LayerGeometry {
         let mut gerber = GerberLayer::default();
         gerber.primitives.push(Primitive::Flash {
-            position: Point::new(x, 0.0),
+            position: Point::new(x, y),
             aperture: crate::geometry::Aperture::circle(1.0),
             rotation_degrees: 0.0,
             polarity: crate::geometry::Polarity::Dark,
@@ -385,6 +497,37 @@ mod tests {
         assert!((bounds.width() - 1.0).abs() < 1e-9);
         project.set_layer_visible(right, false);
         assert!(project.bounds(true).is_none());
+    }
+
+    #[test]
+    fn layer_flips_use_the_board_outline_centre() {
+        let mut project = Project::default();
+        let copper = project.add_layer("Top copper", None, None, point_layer_at(0.0, 0.0));
+        let outline = project.add_layer("Board Outline", None, None, point_layer_at(10.0, 5.0));
+
+        assert_eq!(project.mirror_center(), Some(Point::new(10.0, 5.0)));
+        assert_eq!(project.flip_layers(&[copper], true, true), 1);
+        assert_eq!(project.flip_axes(), Some(FlipAxes::new(10.0, 5.0)));
+        assert_eq!(project.flip_layers(&[outline], true, true), 1);
+        assert_eq!(project.flip_axes(), Some(FlipAxes::new(10.0, 5.0)));
+        assert_eq!(project.flip_layers(&[copper], false, false), 0);
+
+        let Some(LayerGeometry::Gerber(gerber)) = project.layer(copper).map(Layer::geometry) else {
+            panic!("expected Gerber copper layer");
+        };
+        let Primitive::Flash { position, .. } = &gerber.primitives[0] else {
+            panic!("expected flash");
+        };
+        assert_eq!(*position, Point::new(20.0, 10.0));
+
+        assert!(project.set_flip_axes(FlipAxes::new(2.0, 3.0)));
+        let Some(LayerGeometry::Gerber(gerber)) = project.layer(copper).map(Layer::geometry) else {
+            panic!("expected Gerber copper layer");
+        };
+        let Primitive::Flash { position, .. } = &gerber.primitives[0] else {
+            panic!("expected flash");
+        };
+        assert_eq!(*position, Point::new(4.0, 6.0));
     }
 
     #[test]

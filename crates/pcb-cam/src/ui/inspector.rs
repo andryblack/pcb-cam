@@ -14,6 +14,7 @@ use crate::view;
 #[derive(Debug, Clone, PartialEq)]
 enum InspectorAction {
     ToggleLayer(LayerId, bool),
+    FlipLayer(LayerId, bool, bool),
     ToggleTask(OperationId, bool),
     Remove,
     Fit,
@@ -30,6 +31,7 @@ enum InspectorAction {
     Import,
     PickOrigin,
     EditOrigin,
+    EditFlipAxes,
 }
 
 /// Draw the right inspector panel.
@@ -84,6 +86,9 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                 serde_json::json!({"id": id.value(), "visible": visible}),
             );
         }
+        Some(InspectorAction::FlipLayer(id, horizontal, vertical)) => {
+            app.flip_layer(id, horizontal, vertical);
+        }
         Some(InspectorAction::ToggleTask(id, enabled)) => {
             app.run_command(
                 "task.set_enabled",
@@ -113,6 +118,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
             app.set_status("Click the canvas to place the G-code 0-point");
         }
         Some(InspectorAction::EditOrigin) => app.open_origin_dialog(),
+        Some(InspectorAction::EditFlipAxes) => app.open_flip_axes_dialog(),
         None => {}
     }
 }
@@ -174,6 +180,38 @@ fn project_overview(ui: &mut Ui, app: &PbcCam, action: &mut Option<InspectorActi
         }
     });
 
+    ui.add_space(14.0);
+    widgets::section_label(ui, "Flip axes");
+    ui.add_space(5.0);
+    widgets::card_frame().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        if let Some(axes) = app.project().flip_axes() {
+            widgets::field_row(ui, "Vertical X", &format!("{:.3} mm", axes.x));
+            widgets::field_row(ui, "Horizontal Y", &format!("{:.3} mm", axes.y));
+        } else {
+            ui.label(
+                RichText::new("Created automatically on the first flip.")
+                    .size(10.0)
+                    .color(theme::text_faint()),
+            );
+        }
+    });
+    ui.add_space(6.0);
+    let has_axes = app.project().flip_axes().is_some();
+    let axes_button = ui.add_enabled(
+        has_axes,
+        Button::new(RichText::new("Set flip axes…").size(11.0)),
+    );
+    if axes_button.clicked() {
+        *action = Some(InspectorAction::EditFlipAxes);
+    }
+    if has_axes {
+        axes_button.on_hover_text("Move the dashed axes on the canvas or enter coordinates");
+    } else {
+        axes_button
+            .on_disabled_hover_text("Flip a layer first; the axes are created automatically");
+    }
+
     ui.add_space(10.0);
     if ui
         .add_sized(
@@ -226,6 +264,13 @@ fn layer_details(ui: &mut Ui, app: &PbcCam, id: LayerId, action: &mut Option<Ins
             widgets::field_row(ui, "Min", &format_point(bounds.min, app.project().units()));
             widgets::field_row(ui, "Max", &format_point(bounds.max, app.project().units()));
         }
+        let flips = match (layer.flip_h(), layer.flip_v()) {
+            (false, false) => "None",
+            (true, false) => "FlipH",
+            (false, true) => "FlipV",
+            (true, true) => "FlipH + FlipV",
+        };
+        widgets::field_row(ui, "Flip", flips);
         widgets::field_row(ui, "Warnings", &layer.warnings().len().to_string());
     });
 
@@ -233,6 +278,47 @@ fn layer_details(ui: &mut Ui, app: &PbcCam, id: LayerId, action: &mut Option<Ins
         ui.add_space(8.0);
         ui.label(RichText::new(warning).size(10.0).color(theme::copper()));
     }
+
+    ui.add_space(12.0);
+    widgets::section_label(ui, "Mirror layer");
+    ui.add_space(3.0);
+    let button_width = ((ui.available_width() - 8.0) / 3.0).max(42.0);
+    ui.horizontal(|ui| {
+        let horizontal = ui
+            .add_sized(
+                vec2(button_width, 24.0),
+                Button::new(RichText::new("Flip H").size(11.0)),
+            )
+            .on_hover_text("Mirror left/right around the project flip axes (X inverted)");
+        if horizontal.clicked() {
+            *action = Some(InspectorAction::FlipLayer(id, true, false));
+        }
+        let vertical = ui
+            .add_sized(
+                vec2(button_width, 24.0),
+                Button::new(RichText::new("Flip V").size(11.0)),
+            )
+            .on_hover_text("Mirror top/bottom around the project flip axes (Y inverted)");
+        if vertical.clicked() {
+            *action = Some(InspectorAction::FlipLayer(id, false, true));
+        }
+        let both = ui
+            .add_sized(
+                vec2(button_width, 24.0),
+                Button::new(RichText::new("Flip 180°").size(11.0)),
+            )
+            .on_hover_text("Mirror both axes around the project flip axes (180° rotation)");
+        if both.clicked() {
+            *action = Some(InspectorAction::FlipLayer(id, true, true));
+        }
+    });
+    ui.label(
+        RichText::new(
+            "Flipping mirrors the layer around the project flip axes, created on the first flip. Drag the dashed guides on the canvas or use Layer → Set Flip Axes…; use Flip All Layers for bottom-side machining.",
+        )
+        .size(9.0)
+        .color(theme::text_faint()),
+    );
 
     ui.add_space(10.0);
     if ui.button("Fit project").clicked() {
@@ -676,6 +762,15 @@ fn task_details(
                             }
                         }
                     });
+                if boundary.is_some() {
+                    ui.label(
+                        RichText::new(
+                            "The boundary uses a shadow copy with the source layer's flips; the boundary layer itself is unchanged.",
+                        )
+                        .size(9.0)
+                        .color(theme::text_faint()),
+                    );
+                }
                 ui.label(
                     RichText::new(
                         "Work region = boundary inset by Outline offset. Each pass emits holes and nested island contours of work-region minus copper clearance, plus the outer contour when copper reaches the boundary.",

@@ -5,11 +5,11 @@ use eframe::egui::{
     Shape, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
 };
 use pcb_cam_core::{
-    Bounds, ExcellonLayer, GerberRegion, Layer, LayerGeometry, OperationKind, Path, Point,
-    SourceFormat,
+    Bounds, ExcellonLayer, FlipAxes, GerberRegion, Layer, LayerGeometry, OperationKind, Path,
+    Point, SourceFormat,
 };
 
-use crate::app::{PbcCam, Selection};
+use crate::app::{FlipAxis, PbcCam, Selection};
 use crate::theme;
 use crate::ui::widgets;
 use crate::view::{self, ViewState};
@@ -96,6 +96,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         );
     }
 
+    draw_flip_axes(&painter, rect, app);
     draw_task_overlay(&painter, rect, app);
     draw_gcode_origin(
         &painter,
@@ -127,10 +128,19 @@ fn handle_input(ui: &Ui, app: &mut PbcCam, response: &Response, rect: Rect) {
     let origin_pos = origin_screen_pos(&app.view, rect, origin);
     let pointer = response.interact_pointer_pos();
     let grabbed_origin = pointer.is_some_and(|pos| pos.distance(origin_pos) <= 14.0);
+    let axes = app.flip_axes_preview.or(app.project().flip_axes());
+    let grabbed_axis =
+        pointer.and_then(|pos| axes.and_then(|axes| flip_axis_at(&app.view, rect, axes, pos)));
 
-    if response.drag_started() && grabbed_origin {
-        app.origin_drag = true;
-        app.origin_preview = Some(origin);
+    if response.drag_started() {
+        if grabbed_origin {
+            app.origin_drag = true;
+            app.origin_preview = Some(origin);
+        } else if let Some(axis) = grabbed_axis {
+            app.flip_axis_drag = Some(axis);
+            app.flip_axes_preview = axes;
+            app.flip_axes_dialog = None;
+        }
     }
 
     if response.dragged() {
@@ -139,21 +149,39 @@ fn handle_input(ui: &Ui, app: &mut PbcCam, response: &Response, rect: Rect) {
                 let world = app.view.screen_to_world(pos, rect);
                 app.origin_preview = Some(Point::new(f64::from(world.x), f64::from(world.y)));
             }
+        } else if let Some(axis) = app.flip_axis_drag {
+            if let (Some(pos), Some(mut preview)) = (pointer, app.flip_axes_preview) {
+                let world = app.view.screen_to_world(pos, rect);
+                match axis {
+                    FlipAxis::X => preview.x = f64::from(world.x),
+                    FlipAxis::Y => preview.y = f64::from(world.y),
+                }
+                app.flip_axes_preview = Some(preview);
+            }
         } else {
             app.view.pan_by(response.drag_delta());
         }
     }
 
-    if response.drag_stopped() && app.origin_drag {
-        app.origin_drag = false;
-        if let Some(point) = app.origin_preview.take() {
-            app.set_gcode_origin(point);
+    if response.drag_stopped() {
+        if app.origin_drag {
+            app.origin_drag = false;
+            if let Some(point) = app.origin_preview.take() {
+                app.set_gcode_origin(point);
+            }
+        }
+        if app.flip_axis_drag.take().is_some()
+            && let Some(axes) = app.flip_axes_preview.take()
+        {
+            app.set_flip_axes(axes);
         }
     }
 
     if response.double_clicked() {
         if grabbed_origin {
             app.open_origin_dialog();
+        } else if grabbed_axis.is_some() {
+            app.open_flip_axes_dialog();
         } else {
             app.fit_view();
         }
@@ -181,10 +209,19 @@ fn handle_input(ui: &Ui, app: &mut PbcCam, response: &Response, rect: Rect) {
     let hover_origin = response
         .hover_pos()
         .is_some_and(|pos| pos.distance(origin_pos) <= 14.0);
-    if app.origin_drag || response.dragged() {
+    let hover_axis = response
+        .hover_pos()
+        .and_then(|pos| axes.and_then(|axes| flip_axis_at(&app.view, rect, axes, pos)));
+    if app.origin_drag {
+        ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+    } else if let Some(axis) = app.flip_axis_drag {
+        set_flip_axis_cursor(ui, axis);
+    } else if response.dragged() {
         ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
     } else if hover_origin {
         ui.ctx().set_cursor_icon(CursorIcon::Grab);
+    } else if let Some(axis) = hover_axis {
+        set_flip_axis_cursor(ui, axis);
     } else if response.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
     }
@@ -194,6 +231,28 @@ fn handle_input(ui: &Ui, app: &mut PbcCam, response: &Response, rect: Rect) {
             .hover_pos()
             .map(|pointer| app.view.screen_to_world(pointer, rect)),
     );
+}
+
+fn flip_axis_at(view: &ViewState, rect: Rect, axes: FlipAxes, pointer: Pos2) -> Option<FlipAxis> {
+    const HIT_DISTANCE: f32 = 7.0;
+    let x = view.world_to_screen(pos2(axes.x as f32, 0.0), rect).x;
+    let y = view.world_to_screen(pos2(0.0, axes.y as f32), rect).y;
+    let dx = (pointer.x - x).abs();
+    let dy = (pointer.y - y).abs();
+    if dx <= HIT_DISTANCE && dx <= dy {
+        Some(FlipAxis::X)
+    } else if dy <= HIT_DISTANCE {
+        Some(FlipAxis::Y)
+    } else {
+        None
+    }
+}
+
+fn set_flip_axis_cursor(ui: &Ui, axis: FlipAxis) {
+    ui.ctx().set_cursor_icon(match axis {
+        FlipAxis::X => CursorIcon::ResizeHorizontal,
+        FlipAxis::Y => CursorIcon::ResizeVertical,
+    });
 }
 
 fn origin_screen_pos(view: &ViewState, rect: Rect, origin: Point) -> Pos2 {
@@ -494,6 +553,71 @@ fn draw_axes(painter: &Painter, rect: Rect, view: &ViewState) {
     painter.circle_filled(origin, 4.5, theme::canvas());
     painter.circle_stroke(origin, 4.5, Stroke::new(1.2, theme::copper()));
     painter.circle_filled(origin, 1.6, theme::copper_bright());
+}
+
+fn draw_flip_axes(painter: &Painter, rect: Rect, app: &PbcCam) {
+    let Some(axes) = app.flip_axes_preview.or(app.project().flip_axes()) else {
+        return;
+    };
+    let x = app.view.world_to_screen(pos2(axes.x as f32, 0.0), rect).x;
+    let y = app.view.world_to_screen(pos2(0.0, axes.y as f32), rect).y;
+    let accent = theme::copper_bright();
+    let color = Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 155);
+    let stroke = Stroke::new(1.0, color);
+    let units = app.project().units();
+
+    if x >= rect.left() - 1.0 && x <= rect.right() + 1.0 {
+        dashed_line(
+            painter,
+            pos2(x, rect.top()),
+            pos2(x, rect.bottom()),
+            7.0,
+            5.0,
+            stroke,
+        );
+        painter.text(
+            pos2(x + 5.0, rect.top() + 44.0),
+            Align2::LEFT_TOP,
+            format!("Flip H · X {}", view::format_length(axes.x as f32, units)),
+            FontId::monospace(9.0),
+            color,
+        );
+    }
+    if y >= rect.top() - 1.0 && y <= rect.bottom() + 1.0 {
+        dashed_line(
+            painter,
+            pos2(rect.left(), y),
+            pos2(rect.right(), y),
+            7.0,
+            5.0,
+            stroke,
+        );
+        painter.text(
+            pos2(rect.right() - 8.0, y - 5.0),
+            Align2::RIGHT_BOTTOM,
+            format!("Flip V · Y {}", view::format_length(axes.y as f32, units)),
+            FontId::monospace(9.0),
+            color,
+        );
+    }
+}
+
+fn dashed_line(painter: &Painter, start: Pos2, end: Pos2, dash: f32, gap: f32, stroke: Stroke) {
+    let delta = end - start;
+    let length = delta.length();
+    if length < 1.0 {
+        return;
+    }
+    let direction = delta / length;
+    let mut position = 0.0;
+    while position < length {
+        let next = (position + dash).min(length);
+        painter.line_segment(
+            [start + direction * position, start + direction * next],
+            stroke,
+        );
+        position = next + gap;
+    }
 }
 
 fn draw_task_overlay(painter: &Painter, rect: Rect, app: &PbcCam) {
@@ -919,5 +1043,25 @@ mod tests {
     fn blend_over_canvas_is_opaque() {
         let color = blend_over_canvas(227, 164, 94, 220);
         assert_eq!(color.a(), 255);
+    }
+
+    #[test]
+    fn flip_axis_hit_test_prefers_the_closest_axis() {
+        let view = ViewState::default();
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0));
+        let axes = FlipAxes::new(0.0, 0.0);
+        let center = view.world_to_screen(pos2(0.0, 0.0), rect);
+        assert_eq!(
+            flip_axis_at(&view, rect, axes, center + vec2(3.0, 8.0)),
+            Some(FlipAxis::X)
+        );
+        assert_eq!(
+            flip_axis_at(&view, rect, axes, center + vec2(8.0, 3.0)),
+            Some(FlipAxis::Y)
+        );
+        assert_eq!(
+            flip_axis_at(&view, rect, axes, center + vec2(9.0, 9.0)),
+            None
+        );
     }
 }

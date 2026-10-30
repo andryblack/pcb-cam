@@ -609,21 +609,34 @@ impl EngraveOperation {
     }
 
     /// Resolve the clipping boundary: selected layer contour or visible bounds.
+    ///
+    /// A selected boundary layer is used as a shadow copy whose transform is
+    /// derived from the source layer's flip flags, so flipping the source for
+    /// bottom-side work keeps the boundary registered with it.
     pub fn boundary_path(&self, project: &Project) -> Option<Path> {
         if let Some(layer_id) = self.boundary_layer
             && layer_id != self.layer
             && let Some(layer) = project.layer(layer_id)
-            && let LayerGeometry::Gerber(gerber) = layer.geometry()
-            && let Some(path) = gerber.closed_contours().into_iter().max_by(|a, b| {
-                let area = |path: &Path| {
-                    path.bounds()
-                        .map(|bounds| bounds.width() * bounds.height())
-                        .unwrap_or(0.0)
-                };
-                area(a).total_cmp(&area(b))
-            })
+            && let Some(source) = project.layer(self.layer)
+            && let Some(pivot) = project
+                .flip_axes()
+                .map(|axes| axes.pivot())
+                .or_else(|| project.mirror_center())
+            && matches!(layer.geometry(), LayerGeometry::Gerber(_))
         {
-            return Some(path);
+            let geometry = layer.shadow_geometry(source, pivot);
+            if let LayerGeometry::Gerber(gerber) = &geometry
+                && let Some(path) = gerber.closed_contours().into_iter().max_by(|a, b| {
+                    let area = |path: &Path| {
+                        path.bounds()
+                            .map(|bounds| bounds.width() * bounds.height())
+                            .unwrap_or(0.0)
+                    };
+                    area(a).total_cmp(&area(b))
+                })
+            {
+                return Some(path);
+            }
         }
         let bounds = project.bounds(true)?;
         Some(Path::closed(vec![
@@ -838,6 +851,32 @@ mod tests {
     use crate::geometry::{Aperture, DrillHit, DrillTool, ExcellonLayer, GerberLayer, Primitive};
     use crate::tool::{ToolKind, ToolLibrary};
     use crate::{Point, Polarity};
+
+    fn region_layer(points: Vec<Point>) -> LayerGeometry {
+        LayerGeometry::Gerber(GerberLayer {
+            primitives: vec![Primitive::Region {
+                contours: vec![Path::closed(points)],
+                polarity: Polarity::Dark,
+            }],
+            source_units: Some(crate::Unit::Millimeter),
+            warnings: Vec::new(),
+        })
+    }
+
+    fn rectangle_layer(x0: f64, x1: f64, y0: f64, y1: f64) -> LayerGeometry {
+        region_layer(vec![
+            Point::new(x0, y0),
+            Point::new(x1, y0),
+            Point::new(x1, y1),
+            Point::new(x0, y1),
+        ])
+    }
+
+    fn path_has_point(path: &Path, point: Point) -> bool {
+        path.points
+            .iter()
+            .any(|candidate| candidate.distance(point) < 1e-6)
+    }
 
     #[test]
     fn drill_defaults_validate() {
@@ -1154,6 +1193,42 @@ mod tests {
         let bounds = boundary.bounds().unwrap();
         assert!((bounds.width() - 4.2).abs() < 1e-6);
         assert!((bounds.height() - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn clearance_boundary_shadows_the_source_layer_flips() {
+        let mut project = Project::new("Boundary");
+        let source =
+            project.add_layer("Copper", None, None, rectangle_layer(19.0, 21.0, 9.0, 11.0));
+        let boundary = project.add_layer(
+            "CLEARANCE BOUNDARY",
+            None,
+            None,
+            region_layer(vec![
+                Point::new(10.0, 0.0),
+                Point::new(30.0, 0.0),
+                Point::new(30.0, 20.0),
+            ]),
+        );
+        let mut clearance = EngraveOperation::new(source, ToolId::new(1));
+        clearance.boundary_layer = Some(boundary);
+
+        assert_eq!(project.mirror_center(), Some(Point::new(20.0, 10.0)));
+        let path = clearance.boundary_path(&project).unwrap();
+        assert!(path_has_point(&path, Point::new(30.0, 20.0)));
+
+        assert_eq!(project.flip_layers(&[source], true, false), 1);
+        let path = clearance.boundary_path(&project).unwrap();
+        assert!(path_has_point(&path, Point::new(10.0, 20.0)));
+        assert!(!path_has_point(&path, Point::new(30.0, 20.0)));
+
+        // The boundary layer itself stays in its original place.
+        let LayerGeometry::Gerber(gerber) = project.layer(boundary).unwrap().geometry() else {
+            panic!("expected Gerber boundary");
+        };
+        let original = gerber.closed_contours();
+        assert!(path_has_point(&original[0], Point::new(30.0, 20.0)));
+        assert!(!path_has_point(&original[0], Point::new(10.0, 20.0)));
     }
 
     #[test]

@@ -143,6 +143,15 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         enabled: None,
     },
     CommandSpec {
+        id: "layer.flip",
+        label: "Flip layer",
+        description: "Mirror one or all layers horizontally, vertically or both ways.",
+        shortcut: None,
+        undoable: true,
+        run: crate::commands::layer_flip,
+        enabled: Some(crate::commands::layer_flip_enabled),
+    },
+    CommandSpec {
         id: "layer.remove",
         label: "Remove layer",
         description: "Remove a source layer and dependent tasks.",
@@ -167,6 +176,15 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         shortcut: None,
         undoable: true,
         run: crate::commands::project_set_gcode_origin,
+        enabled: None,
+    },
+    CommandSpec {
+        id: "project.set_flip_axes",
+        label: "Set flip axes",
+        description: "Move the project's vertical and horizontal mirror axes.",
+        shortcut: None,
+        undoable: true,
+        run: crate::commands::project_set_flip_axes,
         enabled: None,
     },
     CommandSpec {

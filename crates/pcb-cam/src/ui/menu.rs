@@ -159,6 +159,40 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     }
                 });
 
+                ui.menu_button("Layer", |ui| {
+                    let has_layer = matches!(app.selection, Some(Selection::Layer(_)));
+                    ui.add_enabled_ui(has_layer, |ui| {
+                        ui.menu_button("Flip Selected Layer", |ui| {
+                            flip_entries(ui, app, false);
+                        });
+                    });
+                    ui.add_enabled_ui(!app.project().layers().is_empty(), |ui| {
+                        ui.menu_button("Flip All Layers", |ui| {
+                            flip_entries(ui, app, true);
+                        });
+                    });
+                    let has_axes = app.project().flip_axes().is_some();
+                    let axes_item = ui.add_enabled(has_axes, Button::new("Set Flip Axes…"));
+                    if axes_item.clicked() {
+                        app.open_flip_axes_dialog();
+                        ui.close();
+                    }
+                    if !has_axes {
+                        axes_item.on_disabled_hover_text(
+                            "Flip a layer first; the axes are created automatically",
+                        );
+                    }
+                    ui.separator();
+                    let remove = ui.add_enabled(
+                        has_layer,
+                        Button::new("Remove Selected Layer").shortcut_text("Delete"),
+                    );
+                    if remove.clicked() {
+                        app.remove_selection();
+                        ui.close();
+                    }
+                });
+
                 ui.menu_button("Tasks", |ui| {
                     let can_drill = app.can_add_drill_task();
                     let drill = ui.add_enabled(can_drill, Button::new("Add Drilling Task"));
@@ -366,4 +400,25 @@ fn preview_menus(ui: &mut egui::Ui, app: &mut PbcCam) {
                 .color(theme::copper()),
         );
     });
+}
+
+fn flip_entries(ui: &mut Ui, app: &mut PbcCam, all: bool) {
+    for (label, shortcut, horizontal, vertical) in [
+        ("Horizontal (mirror X)", Some("Shift+H"), true, false),
+        ("Vertical (mirror Y)", Some("Shift+V"), false, true),
+        ("Both (180°)", None, true, true),
+    ] {
+        let button = match shortcut {
+            Some(shortcut) => Button::new(label).shortcut_text(shortcut),
+            None => Button::new(label),
+        };
+        if ui.add(button).clicked() {
+            if all {
+                app.flip_all_layers(horizontal, vertical);
+            } else {
+                app.flip_selected_layer(horizontal, vertical);
+            }
+            ui.close();
+        }
+    }
 }
