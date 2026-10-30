@@ -8,7 +8,7 @@ accurate but do not turn it into an agent notebook.
 
 PCB-CAM is a native Rust desktop CAM application (edition 2024, MSRV 1.95,
 egui/eframe) that turns Gerber and Excellon fabrication data into G-code. The
-current release line is 0.1.0 (Milestone 5).
+current release line is 0.1.2 (Milestone 5).
 
 ## Commands
 

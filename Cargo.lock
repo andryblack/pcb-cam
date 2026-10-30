@@ -2877,7 +2877,7 @@ checksum = "73072a9470554c8e794778acece2312661218aaabb635600957d952cf01c716e"
 
 [[package]]
 name = "pcb-cam"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "earcutr",
  "eframe",
@@ -2893,7 +2893,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-cam-core"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "geo",
  "gerber_parser",
@@ -2903,7 +2903,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-cam-engine"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "log",
  "pcb-cam-core",

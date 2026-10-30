@@ -11,7 +11,7 @@ inspired by [FlatCAM](https://flatcam.org/).
 
 ## Project status
 
-**Milestone 5: G-code preview and machine simulation — complete.** Version 0.1.0.
+**Milestone 5: G-code preview and machine simulation — complete.** Version 0.1.2.
 
 The application works end to end: import fabrication data, build a tool library,
 plan tasks, preview the generated program and export G-code. It is still

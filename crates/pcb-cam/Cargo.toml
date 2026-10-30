@@ -27,7 +27,7 @@ zip = { version = "2.4", default-features = false, features = ["deflate"] }
 [package.metadata.bundle]
 name = "PCB-CAM"
 identifier = "com.pcb-cam.app"
-version = "0.1.0"
+version = "0.1.2"
 category = "DeveloperTool"
 short_description = "CNC CAM for Gerber and Excellon PCB files"
 long_description = "PCB-CAM turns Gerber and Excellon fabrication data into CNC control programs. Cross-platform desktop application built with Rust and egui."

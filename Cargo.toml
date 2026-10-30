@@ -3,7 +3,7 @@ members = ["crates/pcb-cam", "crates/pcb-cam-core", "crates/pcb-cam-engine"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
