@@ -7,6 +7,7 @@
 )]
 
 mod app;
+mod licenses;
 mod preview;
 mod theme;
 mod ui;
@@ -34,8 +35,7 @@ fn main() -> eframe::Result {
         .with_title(app::WINDOW_TITLE)
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([960.0, 600.0]);
-    if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon.png"))
-    {
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(ui::widgets::ICON_PNG) {
         viewport = viewport.with_icon(icon);
     }
 

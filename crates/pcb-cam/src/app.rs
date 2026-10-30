@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use crate::preview::{PreviewMode, PreviewSession};
 use crate::theme;
 use crate::ui;
+use crate::ui::licenses::LicensesViewer;
 use crate::ui::widgets;
 use crate::view::ViewState;
 
@@ -595,6 +596,7 @@ pub struct PbcCam {
     pub(crate) status_error: bool,
     pub(crate) about_open: bool,
     pub(crate) shortcuts_open: bool,
+    pub(crate) licenses: LicensesViewer,
     pub(crate) settings_open: bool,
     pub(crate) settings_section: SettingsSection,
     pub(crate) appearance: theme::AppearanceSettings,
@@ -675,6 +677,7 @@ impl PbcCam {
             status_error: false,
             about_open: false,
             shortcuts_open: false,
+            licenses: LicensesViewer::default(),
             settings_open: false,
             settings_section: SettingsSection::Appearance,
             appearance,
@@ -2119,7 +2122,9 @@ impl PbcCam {
         }
 
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-            if self.about_open || self.shortcuts_open {
+            if self.licenses.open {
+                self.licenses.open = false;
+            } else if self.about_open || self.shortcuts_open {
                 self.about_open = false;
                 self.shortcuts_open = false;
             } else if self.preview.is_some() && self.pending_action.is_none() {
@@ -2140,11 +2145,12 @@ impl PbcCam {
         }
 
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F1)) {
+            self.licenses.open = false;
             self.about_open = true;
             return;
         }
 
-        if self.about_open || self.shortcuts_open {
+        if self.about_open || self.shortcuts_open || self.licenses.open {
             return;
         }
 
@@ -2264,6 +2270,7 @@ impl PbcCam {
         if self.about_open {
             let mut open = true;
             let mut close_clicked = false;
+            let mut open_licenses = false;
 
             egui::Window::new(format!("About {APP_NAME}"))
                 .open(&mut open)
@@ -2324,11 +2331,17 @@ impl PbcCam {
                             if ui.button("Close").clicked() {
                                 close_clicked = true;
                             }
+                            if ui.button("Third-party licenses").clicked() {
+                                open_licenses = true;
+                            }
                         });
                     });
                 });
 
-            self.about_open = open && !close_clicked;
+            self.about_open = open && !close_clicked && !open_licenses;
+            if open_licenses {
+                self.licenses.open = true;
+            }
         }
 
         if self.shortcuts_open {
@@ -2397,6 +2410,7 @@ impl PbcCam {
             self.shortcuts_open = open && !close_clicked;
         }
 
+        ui::licenses::show(ctx, &mut self.licenses);
         self.show_tool_editor(ctx);
     }
 

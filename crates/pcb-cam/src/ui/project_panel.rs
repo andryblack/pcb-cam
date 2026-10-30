@@ -31,9 +31,6 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                 .id_salt("browser_scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    project_card(ui, app);
-                    ui.add_space(14.0);
-
                     section_header(ui, "Layers", app.project().layers().len());
                     ui.add_space(4.0);
                     layer_list(ui, app);
@@ -60,69 +57,6 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     output_section(ui, app);
                 });
         });
-}
-
-fn project_card(ui: &mut Ui, app: &PbcCam) {
-    widgets::card_frame().show(ui, |ui| {
-        ui.set_width(ui.available_width());
-
-        ui.horizontal(|ui| {
-            widgets::brand_mark(ui, 36.0);
-            ui.add_space(2.0);
-            ui.vertical(|ui| {
-                ui.label(
-                    RichText::new(app.project().name())
-                        .size(14.0)
-                        .strong()
-                        .color(theme::text()),
-                );
-                ui.label(
-                    RichText::new(format!(
-                        "{} task{}",
-                        app.project().tasks().len(),
-                        if app.project().tasks().len() == 1 {
-                            ""
-                        } else {
-                            "s"
-                        }
-                    ))
-                    .size(10.5)
-                    .color(theme::text_muted()),
-                );
-            });
-        });
-
-        ui.add_space(10.0);
-
-        ui.horizontal(|ui| {
-            stat(ui, "LAYERS", &app.project().layers().len().to_string());
-            ui.add_space(20.0);
-            stat(
-                ui,
-                "MACH. TOOLS",
-                &app.session.tool_library().len().to_string(),
-            );
-            ui.add_space(20.0);
-            stat(ui, "OBJECTS", &app.project().object_count().to_string());
-        });
-    });
-}
-
-fn stat(ui: &mut Ui, label: &str, value: &str) {
-    ui.vertical(|ui| {
-        ui.label(
-            RichText::new(label)
-                .size(8.8)
-                .strong()
-                .color(theme::text_faint()),
-        );
-        ui.label(
-            RichText::new(value)
-                .size(12.0)
-                .strong()
-                .color(theme::text()),
-        );
-    });
 }
 
 fn section_header(ui: &mut Ui, title: &str, count: usize) {

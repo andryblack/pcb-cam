@@ -296,7 +296,14 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         app.shortcuts_open = true;
                         ui.close();
                     }
+                    if ui.button("Third-party licenses").clicked() {
+                        app.licenses.open = true;
+                        app.about_open = false;
+                        app.shortcuts_open = false;
+                        ui.close();
+                    }
                     if ui.button("About PCB-CAM").clicked() {
+                        app.licenses.open = false;
                         app.about_open = true;
                         ui.close();
                     }
@@ -387,7 +394,14 @@ fn preview_menus(ui: &mut egui::Ui, app: &mut PbcCam) {
             app.shortcuts_open = true;
             ui.close();
         }
+        if ui.button("Third-party licenses").clicked() {
+            app.licenses.open = true;
+            app.about_open = false;
+            app.shortcuts_open = false;
+            ui.close();
+        }
         if ui.button("About PCB-CAM").clicked() {
+            app.licenses.open = false;
             app.about_open = true;
             ui.close();
         }

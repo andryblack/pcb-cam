@@ -52,6 +52,26 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
 
+  licenses:
+    name: License notices
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-about
+        run: cargo install --locked cargo-about --version 0.9.3 --features cli
+
+      - name: Check third-party notices
+        run: ./scripts/gen-licenses.sh --check
+
   build:
     name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -95,9 +115,19 @@ jobs:
       - name: Build release
         run: cargo build --release --locked -p pcb-cam
 
-      - name: Upload binary
+      - name: Stage release files
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "${{ matrix.binary }}" dist/
+          cp LICENSE THIRD_PARTY_LICENSES.md dist/
+          test -s dist/LICENSE
+          test -s dist/THIRD_PARTY_LICENSES.md
+          ls -lh dist
+
+      - name: Upload release files
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.binary }}
+          path: dist/*
           if-no-files-found: error

@@ -1,14 +1,45 @@
 //! Small shared widgets and painting helpers.
 
 use eframe::egui::{
-    self, Align, Button, Color32, CornerRadius, Frame, Layout, Margin, Painter, Rect, Response,
-    RichText, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
+    self, Align, Button, Color32, CornerRadius, Frame, Id, Layout, Margin, Painter, Rect, Response,
+    RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2,
 };
 
 use crate::theme;
 
+/// The application artwork, shared by the window icon and in-app marks.
+pub(crate) const ICON_PNG: &[u8] = include_bytes!("../../../../assets/icon.png");
+
+const ICON_TEXTURE_ID: &str = "pcb-cam-icon";
+
+/// Upload the icon once and reuse it for every frame.
+fn icon_texture(ctx: &egui::Context) -> Option<TextureHandle> {
+    let id = Id::unique(ICON_TEXTURE_ID);
+    if let Some(texture) = ctx.data(|data| data.get_temp::<TextureHandle>(id)) {
+        return Some(texture);
+    }
+    let data = eframe::icon_data::from_png_bytes(ICON_PNG).ok()?;
+    let image = egui::ColorImage::from_rgba_unmultiplied(
+        [data.width as usize, data.height as usize],
+        &data.rgba,
+    );
+    let texture = ctx.load_texture(ICON_TEXTURE_ID, image, TextureOptions::LINEAR);
+    ctx.data_mut(|store| store.insert_temp(id, texture.clone()));
+    Some(texture)
+}
+
 /// Paint the PCB-CAM mark into `rect`.
 pub(crate) fn paint_mark(painter: &Painter, rect: Rect) {
+    if let Some(texture) = icon_texture(painter.ctx()) {
+        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        painter.add(egui::Shape::image(texture.id(), rect, uv, Color32::WHITE));
+        return;
+    }
+    paint_mark_fallback(painter, rect);
+}
+
+/// Vector fallback used only when the artwork cannot be decoded.
+fn paint_mark_fallback(painter: &Painter, rect: Rect) {
     let size = rect.width().min(rect.height());
     let scale = size / 64.0;
     let point = |x: f32, y: f32| rect.min + vec2(x * scale, y * scale);
@@ -149,4 +180,15 @@ pub(crate) fn hairline(ui: &mut Ui) {
         [pos2(rect.left(), rect.center().y), rect.right_center()],
         Stroke::new(1.0, theme::border()),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ICON_PNG;
+
+    #[test]
+    fn icon_artwork_decodes() {
+        let icon = eframe::icon_data::from_png_bytes(ICON_PNG).expect("icon decodes");
+        assert_eq!((icon.width, icon.height), (1024, 1024));
+    }
 }

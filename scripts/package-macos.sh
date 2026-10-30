@@ -33,6 +33,8 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
 cp target/release/pcb-cam "$APP_DIR/Contents/MacOS/pcb-cam"
 cp assets/icon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
+cp LICENSE "$APP_DIR/Contents/Resources/LICENSE.txt"
+cp THIRD_PARTY_LICENSES.md "$APP_DIR/Contents/Resources/THIRD_PARTY_LICENSES.txt"
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -63,6 +65,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <true/>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 andryblack. Third-party notices: Contents/Resources/THIRD_PARTY_LICENSES.txt</string>
 </dict>
 </plist>
 PLIST

@@ -2,6 +2,7 @@
 
 pub(crate) mod gcode_panel;
 pub(crate) mod inspector;
+pub(crate) mod licenses;
 pub(crate) mod menu;
 pub(crate) mod preview;
 pub(crate) mod preview_viewport;

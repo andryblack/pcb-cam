@@ -1,0 +1,36 @@
+# Third-party licenses
+
+PCB-CAM redistributes the third-party Rust crates and fonts listed below.
+This file is generated from `Cargo.lock` by [`cargo-about`](https://github.com/EmbarkStudios/cargo-about);
+run `scripts/gen-licenses.sh` after changing dependencies. Do not edit it
+manually. Where a component offers a choice of licenses, the first accepted
+permissive option in `about.toml` is used (MIT is preferred). Workspace crates
+are listed for completeness and are covered by the project `LICENSE`.
+
+## License overview
+
+{{#each overview}}
+- **{{{name}}}** — {{count}} component(s)
+{{/each}}
+
+## Components and license texts
+
+{{#each licenses}}
+### {{{name}}}
+
+Used by:
+
+{{#each used_by}}
+- {{{crate.name}}} {{{crate.version}}}{{#if crate.repository}} — {{{crate.repository}}}{{/if}}
+{{#if crate.authors}}
+  Copyright: {{#each crate.authors}}{{{this}}}{{#unless @last}}, {{/unless}}{{/each}}
+{{else}}
+  Copyright: see the linked repository.
+{{/if}}
+{{/each}}
+
+````text
+{{{text}}}
+````
+
+{{/each}}
