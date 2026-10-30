@@ -42,25 +42,66 @@ cargo test -p pcb-cam-engine
 cargo test -p pcb-cam-engine --test samples   # end-to-end demo smoke test
 ```
 
-### Packaging and assets
+### Packaging and releases
+
+Local packaging:
 
 ```bash
-./scripts/version.py bump 0.1.1         # update every version reference
-./scripts/version.py check              # CI and release validation run this
 ./scripts/package-linux.sh              # Linux only; versioned tar.gz in dist/
 pwsh -File scripts/package-windows.ps1  # Windows only; versioned zip in dist/
 ./scripts/package-macos.sh --universal  # macOS; universal app bundle and zip in dist/
 python3 scripts/gen_icons.py            # needs Pillow; rewrites assets/icon.*
 ```
 
-Releases are tag-driven: run `./scripts/version.py bump X.Y.Z`, commit the
-result, then push a matching `vX.Y.Z` tag. The release workflow builds Linux
-(Ubuntu 22.04), Windows and a universal macOS bundle, then attaches the archives
-and `SHA256SUMS.txt` to the GitHub Release. `./scripts/version.py check` (also
-run by CI) verifies `Cargo.toml`, `Cargo.lock`, the bundle metadata,
-README/AGENTS and the workspace entries in `THIRD_PARTY_LICENSES.md`; the
-release workflow rejects a tag that does not match. Versions with a `-suffix`
-are published as pre-releases. Only push a release tag after CI is green.
+The macOS script also accepts `--binary PATH` to package an existing binary and
+`--output ZIP` to choose the archive path; the bundle is always written to
+`dist/PCB-CAM.app`. Every archive contains `LICENSE` and
+`THIRD_PARTY_LICENSES.md`; the macOS bundle keeps them in `Contents/Resources`.
+
+Releases are tag-driven: push a `vX.Y.Z` tag and
+`.github/workflows/release.yml` builds Linux on Ubuntu 22.04, Windows x86_64 and
+a universal macOS bundle (arm64 + x86_64). It publishes:
+
+| Asset | Contents |
+| --- | --- |
+| `pcb-cam-<version>-linux-x86_64.tar.gz` | Binary, `LICENSE`, third-party notices |
+| `pcb-cam-<version>-windows-x86_64.zip` | `pcb-cam.exe`, `LICENSE`, notices |
+| `pcb-cam-<version>-macos-universal.zip` | Universal `PCB-CAM.app`, notices in `Contents/Resources` |
+| `SHA256SUMS.txt` | SHA-256 checksums for the archives |
+
+`./scripts/version.py check` runs in CI and in the release validation. It
+verifies `Cargo.toml`, `Cargo.lock`, the bundle metadata, README/AGENTS and the
+workspace entries in `THIRD_PARTY_LICENSES.md`; the release workflow rejects a
+tag that does not match. Versions with a `-suffix` are published as pre-releases.
+
+Release steps:
+
+```bash
+VERSION=X.Y.Z
+./scripts/version.py bump "$VERSION"
+./scripts/version.py check "v$VERSION"
+
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+
+git commit -am "chore: release $VERSION"
+git tag -a "v$VERSION" -m "PCB-CAM $VERSION"
+git push origin master
+# wait for CI on master to pass
+git push origin "v$VERSION"
+```
+
+Only push a release tag after CI is green.
+
+- The Linux release is built on Ubuntu 22.04 and requires glibc 2.35 plus the
+  GUI libraries listed in the README.
+- The macOS bundle is ad-hoc signed, not notarized. Browser downloads receive
+  the quarantine attribute and Gatekeeper rejects the app; the README documents
+  the `xattr -dr com.apple.quarantine` workaround. Proper notarization needs a
+  Developer ID certificate and `notarytool` credentials, which are not configured
+  in this repository.
+- The Windows executable is unsigned, so SmartScreen may warn on first launch.
 
 ### Licenses
 

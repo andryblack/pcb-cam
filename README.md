@@ -96,6 +96,8 @@ export is blocked while a task has unresolved warnings.
 
 ## Requirements
 
+Building from source requires:
+
 - Rust stable **1.95+** (edition 2024; see `rust-toolchain.toml`)
 - A GPU and driver supported by `wgpu`
 - On Linux:
@@ -130,68 +132,59 @@ cargo build --release --locked -p pcb-cam
 
 The binary is `target/release/pcb-cam` (`pcb-cam.exe` on Windows).
 
-### macOS application bundle
+## Download and run
 
-```bash
-./scripts/package-macos.sh
-open dist/PCB-CAM.app
-```
+Ready-to-run builds are attached to
+[GitHub Releases](https://github.com/andryblack/pcb-cam/releases/latest).
 
-The script builds a release binary, assembles `PCB-CAM.app` with the icon,
-`Info.plist`, `LICENSE` and third-party notices, ad-hoc signs it and creates
-`dist/PCB-CAM-macos.zip`. Pass `--universal` for a fat arm64 + x86_64 bundle;
-`--binary PATH` packages an existing binary and `--output ZIP` chooses the
-archive path.
-
-### Release builds
-
-Releases are published by
-[`.github/workflows/release.yml`](.github/workflows/release.yml) when a tag
-named `vMAJOR.MINOR.PATCH` is pushed. The tag must match the workspace version;
-`scripts/version.py` keeps every version copy in sync and validates them.
-
-```bash
-VERSION=0.1.1   # next version, without the leading v
-./scripts/version.py bump "$VERSION"
-./scripts/version.py check "v$VERSION"
-
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
-
-git commit -am "chore: release $VERSION"
-git tag -a "v$VERSION" -m "PCB-CAM $VERSION"
-git push origin master "v$VERSION"
-```
-
-`version.py bump` updates `Cargo.toml`, `Cargo.lock`, the macOS bundle
-metadata, the README/AGENTS status lines and the workspace entries in
-`THIRD_PARTY_LICENSES.md`. `version.py check` runs in CI and in the release
-workflow, so a tag that does not match the manifest cannot publish a release.
-Versions with a `-suffix` are published as pre-releases.
-
-Every release contains:
-
-| Asset | Contents |
+| Asset | Platform |
 | --- | --- |
-| `pcb-cam-<version>-linux-x86_64.tar.gz` | Release binary, `LICENSE`, third-party notices |
-| `pcb-cam-<version>-windows-x86_64.zip` | Release executable, `LICENSE`, third-party notices |
-| `pcb-cam-<version>-macos-universal.zip` | Universal (arm64 + x86_64) `PCB-CAM.app`, notices in `Contents/Resources` |
-| `SHA256SUMS.txt` | SHA-256 checksums for the archives |
+| `pcb-cam-<version>-macos-universal.zip` | macOS 11+ (Apple Silicon and Intel) |
+| `pcb-cam-<version>-windows-x86_64.zip` | Windows 10/11 x86_64 |
+| `pcb-cam-<version>-linux-x86_64.tar.gz` | Linux x86_64 (glibc 2.35+) |
 
-The Linux build targets Ubuntu 22.04 / glibc 2.35 and needs the GUI libraries
-listed under [Requirements](#requirements). The macOS bundle and the Windows
-executable are unsigned; Gatekeeper or SmartScreen may warn on first launch.
+The archives include `LICENSE` and `THIRD_PARTY_LICENSES.md`; the macOS bundle
+keeps them in `Contents/Resources`. `SHA256SUMS.txt` lists the archive checksums.
 
-The platform archives can also be produced locally:
+### macOS
+
+Unzip the archive, move `PCB-CAM.app` to Applications and open it. The bundle is
+ad-hoc signed but not notarized, so Gatekeeper blocks a browser-downloaded app on
+first launch. Remove the quarantine attribute once:
 
 ```bash
-./scripts/package-linux.sh              # Linux
-pwsh -File scripts/package-windows.ps1  # Windows (PowerShell)
-./scripts/package-macos.sh --universal  # macOS
+xattr -dr com.apple.quarantine /Applications/PCB-CAM.app
+open /Applications/PCB-CAM.app
 ```
 
-Each script writes the archive to `dist/`.
+Right-clicking the app and choosing **Open**, or allowing it under
+**System Settings → Privacy & Security**, also works. The binary inside the
+bundle can be started directly from a terminal if needed.
+
+### Windows
+
+Extract the zip and run `pcb-cam.exe`. The executable is unsigned, so SmartScreen
+may show a warning on first launch; choose **More info → Run anyway**.
+
+### Linux
+
+Install the GUI libraries listed under [Requirements](#requirements), extract
+the tarball and run the binary:
+
+```bash
+tar -xzf pcb-cam-<version>-linux-x86_64.tar.gz
+./pcb-cam-<version>-linux-x86_64/pcb-cam
+```
+
+The release is built on Ubuntu 22.04 and requires glibc 2.35 or newer.
+
+All builds accept the same command-line arguments as the development binary:
+
+```bash
+./pcb-cam --sample
+./pcb-cam board.gbr board.drl
+./pcb-cam gerbers.zip
+```
 
 ## Quick start
 
