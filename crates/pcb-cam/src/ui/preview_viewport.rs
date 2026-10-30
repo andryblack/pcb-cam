@@ -276,7 +276,7 @@ fn draw_paths(
             .map(|point| projector.point(*point))
             .collect();
         if projected.len() >= 2 {
-            painter.add(eframe::egui::Shape::line(projected, Stroke::new(1.0, dim)));
+            painter.add(eframe::egui::Shape::line(projected, Stroke::new(0.75, dim)));
         }
 
         let executed_end = active.unwrap_or(0).min(path.move_end);
@@ -301,7 +301,7 @@ fn draw_paths(
         if bright.len() >= 2 {
             painter.add(eframe::egui::Shape::line(
                 bright,
-                Stroke::new(if path.cutting { 2.1 } else { 1.35 }, color),
+                Stroke::new(if path.cutting { 1.4 } else { 0.9 }, color),
             ));
         } else if bright.len() == 1 && active.is_some() {
             painter.circle_filled(bright[0], 2.0, color);
@@ -321,7 +321,7 @@ fn draw_tool(painter: &Painter, projector: &Projector, state: &PreviewState) {
             5.0,
             4.0,
             Stroke::new(
-                1.0,
+                0.8,
                 Color32::from_rgba_unmultiplied(
                     theme::preview_cut().r(),
                     theme::preview_cut().g(),
@@ -333,7 +333,7 @@ fn draw_tool(painter: &Painter, projector: &Projector, state: &PreviewState) {
         painter.circle_stroke(
             surface,
             4.0,
-            Stroke::new(1.0, with_alpha(theme::preview_cut(), 160)),
+            Stroke::new(0.8, with_alpha(theme::preview_cut(), 160)),
         );
     }
 
@@ -358,20 +358,20 @@ fn draw_tool(painter: &Painter, projector: &Projector, state: &PreviewState) {
     painter.add(eframe::egui::Shape::convex_polygon(
         cone,
         with_alpha(theme::panel_raised(), 215),
-        Stroke::new(1.0, with_alpha(theme::preview_tool(), 185)),
+        Stroke::new(0.8, with_alpha(theme::preview_tool(), 185)),
     ));
-    painter.line_segment([tip, holder], Stroke::new(1.5, theme::preview_tool()));
+    painter.line_segment([tip, holder], Stroke::new(1.1, theme::preview_tool()));
     painter.circle_filled(holder, 5.0, theme::preview_tool());
     painter.circle_filled(tip, 3.2, theme::preview_cut());
-    painter.circle_stroke(tip, 7.0, Stroke::new(1.2, theme::preview_tool()));
+    painter.circle_stroke(tip, 7.0, Stroke::new(1.0, theme::preview_tool()));
     let arm = 5.0;
     painter.line_segment(
         [tip - vec2(arm, 0.0), tip + vec2(arm, 0.0)],
-        Stroke::new(1.0, with_alpha(theme::preview_tool(), 170)),
+        Stroke::new(0.8, with_alpha(theme::preview_tool(), 170)),
     );
     painter.line_segment(
         [tip - vec2(0.0, arm), tip + vec2(0.0, arm)],
-        Stroke::new(1.0, with_alpha(theme::preview_tool(), 170)),
+        Stroke::new(0.8, with_alpha(theme::preview_tool(), 170)),
     );
 }
 

@@ -3,7 +3,7 @@
 use eframe::egui::{self, Align, Button, Frame, Layout, Margin, RichText, Stroke, Ui, vec2};
 use pcb_cam_core::{
     ContourSide, EngraveSide, LayerGeometry, LayerId, OperationId, OperationKind, SourceToolInfo,
-    Tool, ToolId, Unit,
+    Tool, ToolId, Unit, clearance_pass_count, depth_pass_count,
 };
 
 use crate::app::{PbcCam, Selection, TaskDraftKind};
@@ -666,10 +666,14 @@ fn task_details(
                 side,
                 offset,
                 depth,
+                stepdown,
                 retract,
                 feed,
                 plunge,
                 spindle,
+                bridge_length,
+                bridge_start_depth,
+                bridge_count,
             } => {
                 if tool_changed {
                     *offset = tool_diameter * 0.5;
@@ -704,9 +708,44 @@ fn task_details(
                 );
 
                 ui.add_space(8.0);
+                widgets::section_label(ui, "Bridges");
+                ui.add_space(3.0);
+                commit |= inline_u32(ui, "Count", bridge_count, 0..=100, "", 0.5);
+                commit |= inline_offset(
+                    ui,
+                    "Length",
+                    bridge_length,
+                    0.0..=50.0,
+                    " mm",
+                    2.0,
+                );
+                let depth_limit = (*depth).max(0.001);
+                commit |= inline_offset(
+                    ui,
+                    "Start depth",
+                    bridge_start_depth,
+                    0.0..=depth_limit,
+                    " mm",
+                    0.5,
+                );
+                ui.label(
+                    RichText::new(
+                        "Bridges leave short uncut tabs that hold the part in the stock. Count 0 disables them. Each closed contour gets that many bridges, spaced evenly around its perimeter and centred on its longest edges.",
+                    )
+                    .size(9.0)
+                    .color(theme::text_faint()),
+                );
+
+                ui.add_space(8.0);
                 widgets::section_label(ui, "Cut parameters");
                 ui.add_space(3.0);
                 commit |= inline_f64(ui, "Depth", depth, 0.01..=50.0, " mm");
+                commit |= inline_f64(ui, "Stepdown", stepdown, 0.01..=50.0, " mm");
+                widgets::field_row(
+                    ui,
+                    "Depth passes",
+                    &depth_pass_count(*depth, *stepdown).to_string(),
+                );
                 commit |= inline_f64(ui, "Retract", retract, 0.1..=100.0, " mm");
                 commit |= inline_f64(ui, "Feed", feed, 1.0..=10_000.0, " mm/min");
                 commit |= inline_f64(ui, "Plunge", plunge, 1.0..=5_000.0, " mm/min");
@@ -716,7 +755,7 @@ fn task_details(
                 side,
                 outline_offset,
                 offset,
-                passes,
+                clearance_width,
                 stepover,
                 depth,
                 retract,
@@ -794,7 +833,7 @@ fn task_details(
                 );
 
                 ui.add_space(8.0);
-                widgets::section_label(ui, "Offset passes");
+                widgets::section_label(ui, "Clearing band");
                 ui.add_space(3.0);
                 let mut changed_side = false;
                 ui.horizontal(|ui| {
@@ -817,18 +856,30 @@ fn task_details(
                     " mm",
                     tool_diameter * 0.5,
                 );
-                commit |= inline_u32(ui, "Passes", passes, 1..=100, "", 1.0);
+                commit |= inline_offset(
+                    ui,
+                    "Clearing width",
+                    clearance_width,
+                    0.0..=100.0,
+                    " mm",
+                    2.0,
+                );
                 commit |= inline_offset(
                     ui,
                     "Offset step",
                     stepover,
-                    0.0..=50.0,
+                    0.01..=50.0,
                     " mm",
                     tool_diameter,
                 );
+                widgets::field_row(
+                    ui,
+                    "Passes",
+                    &clearance_pass_count(*clearance_width, *stepover).to_string(),
+                );
                 ui.label(
                     RichText::new(
-                        "Work region = boundary inset by Outline offset; passes are built as difference between work region and copper clearance.",
+                        "Clearing width determines the pass count at the configured offset step.",
                     )
                     .size(9.5)
                     .color(theme::text_faint()),
@@ -1070,9 +1121,9 @@ fn inline_u32(
                     .speed(speed)
                     .suffix(suffix),
             );
-            // Integer fields such as Passes should apply as soon as they
-            // change, including while the user types. Dragging is still
-            // committed once on release.
+            // Integer fields such as bridge count or spindle speed should apply
+            // as soon as they change, including while the user types. Dragging
+            // is still committed once on release.
             commit = response.drag_stopped()
                 || (response.changed() && !response.dragged())
                 || (response.changed()

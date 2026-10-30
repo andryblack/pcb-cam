@@ -68,11 +68,11 @@ Implemented:
   - **Drilling** — source-hole filter, drill bit, vertical plunge only, depth, retract, feed, plunge, dwell, spindle
   - **Hole milling** — source-hole/slot filter, end mill or V-bit, helical interpolation for holes larger than the tool, routed slots, depth, retract, feed, plunge, dwell, helical step-down, spindle
   - **Spot drilling** — source-hole filter, Cone machining tool, depth, retract, feed, plunge, dwell, spindle; uses hole centres only and ignores diameters/slots
-  - **Edge cut** — machining tool, outside/inside/on-line offset (defaults to tool radius), depth, retract, feed, plunge, spindle
-  - **Clearance** — isolation routing around unioned copper, visible-bounds or Gerber-boundary-layer clipping, outline offset, copper offset, pass count, offset step, depth, retract, feed, plunge, spindle
+  - **Edge cut** — machining tool, outside/inside/on-line offset (defaults to tool radius), total depth, step-down per pass (the pass count is derived from the depth), retract, feed, plunge, spindle, and optional bridges/tabs that keep the part in the stock
+  - **Clearance** — isolation routing around unioned copper, visible-bounds or Gerber-boundary-layer clipping, outline offset, copper offset, clearing width (default 2 mm), offset step, depth, retract, feed, plunge, spindle
 - Drilling tasks can be created even when the library has no exact cutter; the closest tool is selected and the inspector shows warnings derived from the selected holes/slots. G-code export is blocked while a task has unresolved warnings.
 - Task timeline with selection, enable/disable, creation, reordering and online editing in the inspector
-- Selected-task canvas overlay in red: drill/slot positions, spot-drill centres, edge-cut offset toolpath or clearance paths
+- Selected-task canvas overlay in red: drill/slot positions, spot-drill centres, edge-cut offset toolpath or clearance paths; edge-cut bridges are highlighted in the accent colour
 - **Helical interpolation** for holes larger than the selected end mill/V-bit. A 1.0 mm end mill can machine a 1.5 mm hole with a helical path; a drill bit is rejected because it cannot side-cut.
 - G-code move ordering:
   - drilling and spot drilling visit the nearest remaining hole
@@ -119,6 +119,49 @@ library contains a 0.3 mm drill and a 1.0 mm end mill:
 This separation is the point: the source tool says **which objects belong to a
 task**, while the machining tool says **what cutter performs the work**.
 
+### Example: edge-cut depth passes
+
+Edge cuts reach the total depth in several passes. **Stepdown** sets the maximum
+depth increase per pass; the number of passes is calculated from the total depth
+as `ceil(depth / stepdown)` and the last pass is clamped to the exact total
+depth. For example, a 1.8 mm cut with a 0.5 mm stepdown produces four passes at
+0.5, 1.0, 1.5 and 1.8 mm. The inspector shows the calculated **Depth passes**
+next to the stepdown field and the timeline summarises the pass count. The
+stepdown defaults to `0.5 mm`.
+
+### Example: edge-cut bridges
+
+Bridges (tabs) stop the finished board from coming loose while the last contour
+pass is still cutting. In the **Edge cut** task inspector set:
+
+- **Count** — number of bridges per closed contour (`0` disables bridges; the
+  default is `0`).
+- **Length** — length of each bridge along the contour (default `2 mm`).
+- **Start depth** — depth at which each bridge begins (default `0.5 mm`). The
+  cutter is raised to this depth while crossing the bridge, leaving the material
+  below it intact.
+
+For each closed contour the perimeter is divided into as many equal sectors as
+there are bridges. A bridge is centred on the midpoint of the longest edge whose
+midpoint lies inside its sector, so rectangular outlines get one bridge per long
+side while irregular outlines still get evenly spaced tabs. Bridges are clamped
+to their sector and therefore never overlap. The canvas marks them in the accent
+colour and the G-code lifts to `Z-(start depth)` over each bridge.
+
+Bridges combine with depth passes: passes shallower than the bridge start depth
+cut the whole contour, while every deeper pass lifts over the bridge. The first
+pass at the start depth therefore removes the material above the tab, and the
+following passes leave the tab intact.
+
+### Example: clearance width
+
+The **Clearance** task specifies the width of the copper-free band instead of a
+pass count. **Clearing width** defaults to `2 mm`. **Offset step** is the
+distance between neighbouring passes; the pass count is calculated as
+`ceil(clearing width / offset step)` and the passes keep that offset step. The
+inspector shows the calculated pass count and the timeline summarises the width
+and pass count. A clearing width of `0` keeps a single offset pass.
+
 ### Example: bottom-side artwork
 
 Mirroring prepares artwork for machining the second side of a board:
@@ -143,7 +186,6 @@ flipping when the origin must follow the new side.
 Next:
 
 - Use Gerber source tools (apertures) to filter cut-out and clearance objects
-- Edge cut tabs and multi-pass depth stepping
 - Machine/post-processor profiles and tool wear data
 - Acceleration-aware cycle-time estimates and a machine envelope check
 - Preview overlays for the source Gerber and Excellon layers
@@ -155,8 +197,9 @@ Next:
 - Gerber source apertures are listed, but currently only **drilling, hole-milling and spot-drilling tasks** use source tools as filters. Edge-cut and clearance tasks process the whole layer.
 - Gerber regions are triangulated; regions with multiple nested contours/islands may not be fully supported yet.
 - Contour offsets use mitred joins without a full self-intersection cleanup.
-- Clearance follows isolation routing: all copper primitives are unioned first, then buffered by the explicit copper offset for each pass, bounded by a clearance boundary. By default the boundary is the bounding box of visible layers; any Gerber layer can be selected instead. Its largest closed contour is used, or its bounds when it has no closed contour. With a boundary, the work region is the boundary inset by Outline offset. Each pass subtracts the copper clearance from the work region, emits the holes and nested island contours of the remaining region, and adds the outer contour when copper reaches the boundary; work region is stepped inward by Offset step for the next pass. New tasks default to: outline offset = tool radius, copper offset = tool radius, offset step = tool diameter. Tool width is not used by the path builder; the explicit offsets control the geometry. Traces ending inside pads therefore do not produce separate circles inside the pad; Outside expands the copper, Inside cuts into it.
+- Clearance follows isolation routing: all copper primitives are unioned first, then buffered by the explicit copper offset for each pass, bounded by a clearance boundary. By default the boundary is the bounding box of visible layers; any Gerber layer can be selected instead. Its largest closed contour is used, or its bounds when it has no closed contour. With a boundary, the work region is the boundary inset by Outline offset. Each pass subtracts the copper clearance from the work region, emits the holes and nested island contours of the remaining region, and adds the outer contour when copper reaches the boundary; work region is stepped inward by Offset step for the next pass. New tasks default to: outline offset = tool radius, copper offset = tool radius, clearing width = 2 mm, offset step = tool diameter. The pass count is derived from the clearing width and offset step. Tool width is not used by the path builder; the explicit offsets control the geometry. Traces ending inside pads therefore do not produce separate circles inside the pad; Outside expands the copper, Inside cuts into it.
 - Slots narrower than the machining tool are rejected; wider slots are routed on the centreline, which may not clear the full slot width.
+- Edge-cut bridges are computed on each offset contour, including internal cut-outs, so every closed contour receives the configured count. A bridge is shortened when its sector is too short, which keeps neighbouring bridges from overlapping.
 - Project files are JSON (`.pcbcam`, version 1). Loading merges missing machining tools into the shared library; conflicting tool definitions are cloned under a new id and task references are remapped. Recent files are stored in the application settings; quit/new/open prompt to save pending changes.
 - G-code is emitted in millimetres with explicit drill/plunge moves. Coordinates are relative to the selected G-code 0-point; machine-specific headers and cutter compensation are not yet supported. XY travel uses `G01` with the configured travel feed rather than controller-defined `G00` rapid.
 - The preview replays the generated subset (`G00`/`G01`/`G02`/`G03`, `G04`, `M3`/`M5`/`M6` and `F`/`S`/`T` words) at programmed feed rates from a safe-Z start. Tool changes and spindle starts use fixed simulated durations; acceleration, look-ahead and controller-specific timing are not modelled yet.
@@ -227,9 +270,13 @@ The script builds a release binary, assembles `PCB-CAM.app` with the app icon an
    - **Clearance** needs a Gerber layer with paths.
 5. Select the task. Edit it directly in the inspector: choose one
    **machining tool**, check the **source tools** for drilling/hole milling/spot drilling, and change
-   depths/feeds. Changes are applied online; there is no separate task-edit dialog.
+   depths/feeds. Edge-cut tasks also expose stepdown (with the calculated pass
+   count) plus bridge count, length and start depth; clearance tasks expose the
+   clearing width and the calculated pass count. Changes are applied online;
+   there is no separate task-edit dialog.
    While selected, the task is drawn in red on the canvas — drilling positions
-   for drill tasks, or the offset/clearance trajectory for milling tasks.
+   for drill tasks, or the offset/clearance trajectory for milling tasks;
+   edge-cut bridges use the accent colour.
 6. Review machining defaults under **View → Settings… → Machining**:
    travel feed, safe Z, drill plunge/depth, mill feed/plunge/depth, spot
    depth, helical step-down, spindle and the default clearance tool. They

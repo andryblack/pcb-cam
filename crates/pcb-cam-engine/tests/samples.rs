@@ -119,9 +119,11 @@ fn demo_project_uses_source_filters_and_machining_tools() {
         )
         .unwrap();
     assert_eq!(single["tasks"], 1);
-    assert_eq!(single["paths"], 1);
+    // The default 0.5 mm stepdown turns the 1.8 mm edge cut into four passes.
+    assert_eq!(single["paths"], 4);
     let single_text = std::fs::read_to_string(&single_path).unwrap();
     assert!(single_text.contains("Edge cut"));
+    assert!(single_text.contains("(Depth passes: 4 × 0.500 mm step, total 1.800 mm)"));
     assert!(single_text.contains("M6"));
     let _ = std::fs::remove_file(single_path);
 

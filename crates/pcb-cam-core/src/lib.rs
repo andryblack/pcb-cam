@@ -22,10 +22,11 @@ mod units;
 pub use geometry::{CopperGeometry, GerberRegion};
 pub use layer::{Layer, LayerId, SourceFormat, SourceToolInfo, suggest_color};
 pub use operation::{
-    ClearanceOperation, ClearanceTask, ContourSide, CutoutOperation, CutoutTask, DrillOperation,
-    DrillTask, EdgeCutOperation, EdgeCutTask, EngraveOperation, EngraveSide, EngraveTask,
-    HoleMillOperation, HoleMillTask, Operation, OperationId, OperationKind, SpotDrillOperation,
-    SpotDrillTask, Task, TaskId, TaskKind,
+    BridgeSpan, ClearanceOperation, ClearanceTask, ContourSide, CutoutOperation, CutoutTask,
+    DrillOperation, DrillTask, EdgeCutOperation, EdgeCutTask, EngraveOperation, EngraveSide,
+    EngraveTask, HoleMillOperation, HoleMillTask, Operation, OperationId, OperationKind,
+    SpotDrillOperation, SpotDrillTask, Task, TaskId, TaskKind, clearance_pass_count,
+    depth_pass_count,
 };
 pub use persist::{LoadedProject, load_project, save_project};
 pub use project::{FlipAxes, Project, UNTITLED_PROJECT};

@@ -244,7 +244,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: "task.add_cutout",
         label: "Add edge cut task",
-        description: "Create a task cutting along closed Gerber contours.",
+        description: "Create a multi-pass task cutting along closed Gerber contours, with optional bridges.",
         shortcut: None,
         undoable: true,
         run: crate::commands::operation_add_cutout,
@@ -253,7 +253,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: "task.add_engrave",
         label: "Add clearance task",
-        description: "Create a clearance task around paths and polygon outlines.",
+        description: "Create a clearance task around paths and polygon outlines with a clearing width.",
         shortcut: None,
         undoable: true,
         run: crate::commands::operation_add_engrave,
@@ -280,7 +280,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: "task.update_cutout",
         label: "Update edge cut task",
-        description: "Change the tool, side, depth or feeds of an edge cut task.",
+        description: "Change the tool, side, depth, step-down, feeds or bridges of an edge cut task.",
         shortcut: None,
         undoable: true,
         run: crate::commands::operation_update_cutout,
@@ -289,7 +289,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: "task.update_engrave",
         label: "Update clearance task",
-        description: "Change the tool, offsets, passes or feeds of a clearance task.",
+        description: "Change the tool, offsets, clearing width or feeds of a clearance task.",
         shortcut: None,
         undoable: true,
         run: crate::commands::operation_update_engrave,

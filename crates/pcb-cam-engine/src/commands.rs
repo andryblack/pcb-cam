@@ -152,6 +152,10 @@ struct OperationAddCutoutParams {
     feed: Option<f64>,
     plunge: Option<f64>,
     spindle: Option<u32>,
+    stepdown: Option<f64>,
+    bridge_length: Option<f64>,
+    bridge_start_depth: Option<f64>,
+    bridge_count: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,6 +170,10 @@ struct OperationUpdateCutoutParams {
     feed: Option<f64>,
     plunge: Option<f64>,
     spindle: Option<u32>,
+    stepdown: Option<f64>,
+    bridge_length: Option<f64>,
+    bridge_start_depth: Option<f64>,
+    bridge_count: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,7 +184,7 @@ struct OperationAddEngraveParams {
     side: Option<String>,
     outline_offset: Option<f64>,
     offset: Option<f64>,
-    passes: Option<u32>,
+    clearance_width: Option<f64>,
     stepover: Option<f64>,
     depth: Option<f64>,
     retract: Option<f64>,
@@ -195,7 +203,7 @@ struct OperationUpdateEngraveParams {
     side: Option<String>,
     outline_offset: Option<f64>,
     offset: Option<f64>,
-    passes: Option<u32>,
+    clearance_width: Option<f64>,
     stepover: Option<f64>,
     depth: Option<f64>,
     retract: Option<f64>,
@@ -606,6 +614,18 @@ pub(crate) fn operation_add_cutout(session: &mut Session, params: &Value) -> Res
     if let Some(offset) = params.offset {
         cutout.offset_mm = offset;
     }
+    if let Some(stepdown) = params.stepdown {
+        cutout.stepdown_mm = stepdown;
+    }
+    if let Some(length) = params.bridge_length {
+        cutout.bridge_length_mm = length;
+    }
+    if let Some(depth) = params.bridge_start_depth {
+        cutout.bridge_start_depth_mm = depth;
+    }
+    if let Some(count) = params.bridge_count {
+        cutout.bridge_count = count;
+    }
     apply_milling_overrides(
         &mut cutout.depth_mm,
         &mut cutout.retract_mm,
@@ -661,6 +681,18 @@ pub(crate) fn operation_update_cutout(
     }
     if let Some(offset) = params.offset {
         cutout.offset_mm = offset;
+    }
+    if let Some(stepdown) = params.stepdown {
+        cutout.stepdown_mm = stepdown;
+    }
+    if let Some(length) = params.bridge_length {
+        cutout.bridge_length_mm = length;
+    }
+    if let Some(depth) = params.bridge_start_depth {
+        cutout.bridge_start_depth_mm = depth;
+    }
+    if let Some(count) = params.bridge_count {
+        cutout.bridge_count = count;
     }
     apply_milling_overrides(
         &mut cutout.depth_mm,
@@ -740,11 +772,11 @@ pub(crate) fn operation_add_engrave(
     if let Some(offset) = params.offset {
         engrave.offset_mm = offset;
     }
-    if let Some(passes) = params.passes {
-        engrave.passes = passes;
-    }
     if let Some(stepover) = params.stepover {
         engrave.stepover_mm = stepover;
+    }
+    if let Some(width) = params.clearance_width {
+        engrave.clearance_width_mm = width;
     }
     if params.boundary_default != Some(true)
         && let Some(layer) = params.boundary_layer
@@ -807,11 +839,11 @@ pub(crate) fn operation_update_engrave(
     if let Some(offset) = params.offset {
         engrave.offset_mm = offset;
     }
-    if let Some(passes) = params.passes {
-        engrave.passes = passes;
-    }
     if let Some(stepover) = params.stepover {
         engrave.stepover_mm = stepover;
+    }
+    if let Some(width) = params.clearance_width {
+        engrave.clearance_width_mm = width;
     }
     if params.boundary_default == Some(true) {
         engrave.boundary_layer = None;
@@ -2157,6 +2189,44 @@ M30
     }
 
     #[test]
+    fn edge_cut_stepdown_and_bridge_parameters_are_updated() {
+        let mut session = Session::new();
+        let import = session
+            .execute(
+                "file.import_gerber",
+                &json!({"content": EDGE, "name": "Edge"}),
+            )
+            .unwrap();
+        let layer = import["layer"].as_u64().unwrap();
+        let created = session
+            .execute("task.add_cutout", &json!({"layer": layer}))
+            .unwrap();
+        session
+            .execute(
+                "task.update_cutout",
+                &json!({
+                    "id": created["id"],
+                    "stepdown": 0.25,
+                    "bridge_count": 6,
+                    "bridge_length": 3.0,
+                    "bridge_start_depth": 0.3,
+                }),
+            )
+            .unwrap();
+        let task = session
+            .project()
+            .task(OperationId::new(created["id"].as_u64().unwrap()))
+            .unwrap();
+        let OperationKind::Cutout(cutout) = task.kind() else {
+            panic!("expected edge cut");
+        };
+        assert!((cutout.stepdown_mm - 0.25).abs() < 1e-9);
+        assert_eq!(cutout.bridge_count, 6);
+        assert!((cutout.bridge_length_mm - 3.0).abs() < 1e-9);
+        assert!((cutout.bridge_start_depth_mm - 0.3).abs() < 1e-9);
+    }
+
+    #[test]
     fn clearance_offsets_reset_when_the_tool_changes() {
         let mut session = Session::new();
         let import = session
@@ -2219,6 +2289,7 @@ M30
         assert!((engrave.outline_offset_mm - diameter * 0.5).abs() < 1e-9);
         assert!((engrave.offset_mm - diameter * 0.5).abs() < 1e-9);
         assert!((engrave.stepover_mm - diameter).abs() < 1e-9);
+        assert_eq!(engrave.clearance_width_mm, 2.0);
     }
 
     #[test]
@@ -2239,7 +2310,7 @@ M30
                     "side": "inside",
                     "outline_offset": 0.05,
                     "offset": 0.2,
-                    "passes": 4,
+                    "clearance_width": 0.6,
                     "stepover": 0.15,
                 }),
             )
@@ -2254,7 +2325,8 @@ M30
         assert_eq!(engrave.side, EngraveSide::Inside);
         assert_eq!(engrave.outline_offset_mm, 0.05);
         assert_eq!(engrave.offset_mm, 0.2);
-        assert_eq!(engrave.passes, 4);
+        assert_eq!(engrave.clearance_width_mm, 0.6);
+        assert_eq!(engrave.pass_count(), 4);
         assert_eq!(engrave.stepover_mm, 0.15);
 
         session
@@ -2262,7 +2334,7 @@ M30
                 "task.update_engrave",
                 &json!({
                     "id": created["id"],
-                    "passes": 7,
+                    "clearance_width": 1.2,
                     "outline_offset": 0.08,
                     "offset": 0.4,
                     "stepover": 0.3,
@@ -2276,7 +2348,8 @@ M30
         let OperationKind::Engrave(engrave) = task.kind() else {
             panic!("expected engrave task");
         };
-        assert_eq!(engrave.passes, 7);
+        assert_eq!(engrave.clearance_width_mm, 1.2);
+        assert_eq!(engrave.pass_count(), 4);
         assert_eq!(engrave.outline_offset_mm, 0.08);
         assert_eq!(engrave.offset_mm, 0.4);
         assert_eq!(engrave.stepover_mm, 0.3);

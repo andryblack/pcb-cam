@@ -236,6 +236,149 @@ impl Path {
         self.points.len() >= 2
     }
 
+    /// Point at an arc-length distance from the first vertex.
+    ///
+    /// Distances outside the path length wrap around, so the method is useful
+    /// for walking closed contours. Returns `None` only for an empty path.
+    pub fn point_at_distance(&self, distance: f64) -> Option<Point> {
+        let first = *self.points.first()?;
+        let total = self.length();
+        if total <= 1e-9 {
+            return Some(first);
+        }
+        let mut remaining = distance.rem_euclid(total);
+        let count = self.points.len();
+        let segments = if self.closed && count > 2 {
+            count
+        } else {
+            count.saturating_sub(1)
+        };
+        for index in 0..segments {
+            let (start, end) = if index + 1 < count {
+                (self.points[index], self.points[index + 1])
+            } else {
+                (self.points[count - 1], first)
+            };
+            let length = start.distance(end);
+            if remaining <= length {
+                if length <= 1e-12 {
+                    return Some(start);
+                }
+                let t = remaining / length;
+                return Some(Point::new(
+                    start.x + (end.x - start.x) * t,
+                    start.y + (end.y - start.y) * t,
+                ));
+            }
+            remaining -= length;
+        }
+        Some(self.points.last().copied().unwrap_or(first))
+    }
+
+    /// Vertices between two arc-length positions, including both endpoints.
+    ///
+    /// Unlike [`Path::point_at_distance`], `end_mm` is not wrapped: callers may
+    /// pass a value beyond the path length to continue across the seam of a
+    /// closed contour. The result is empty when the span has no length.
+    pub fn points_between(&self, start_mm: f64, end_mm: f64) -> Vec<Point> {
+        let Some(first) = self.points.first().copied() else {
+            return Vec::new();
+        };
+        let total = self.length();
+        if total <= 1e-9 || end_mm <= start_mm + 1e-9 {
+            return Vec::new();
+        }
+        let start = start_mm.rem_euclid(total);
+        let mut end = end_mm;
+        while end <= start + 1e-9 {
+            end += total;
+        }
+
+        let count = self.points.len();
+        let segment_count = if self.closed && count > 2 {
+            count
+        } else {
+            count.saturating_sub(1)
+        };
+        if segment_count == 0 {
+            return Vec::new();
+        }
+
+        let mut starts = Vec::with_capacity(segment_count);
+        let mut lengths = Vec::with_capacity(segment_count);
+        let mut ends = Vec::with_capacity(segment_count);
+        let mut walked = 0.0;
+        for index in 0..segment_count {
+            let (segment_start, segment_end) = if index + 1 < count {
+                (self.points[index], self.points[index + 1])
+            } else {
+                (self.points[count - 1], first)
+            };
+            starts.push(walked);
+            let length = segment_start.distance(segment_end);
+            lengths.push(length);
+            ends.push(segment_end);
+            walked += length;
+        }
+
+        // Start at the segment that contains `start`. When `start` is exactly on
+        // a vertex, use the following segment so the vertex is not emitted twice.
+        let first_segment = (0..segment_count).find_map(|index| {
+            let segment_start = starts[index];
+            let segment_end = segment_start + lengths[index];
+            (start >= segment_start - 1e-9 && start < segment_end - 1e-9)
+                .then_some((index, segment_end - start))
+        });
+        let Some((mut index, mut advance)) = first_segment else {
+            return Vec::new();
+        };
+
+        let mut points = Vec::new();
+        if let Some(point) = self.point_at_distance(start) {
+            points.push(point);
+        }
+        let mut travelled = start;
+        for _ in 0..=segment_count {
+            let next = travelled + advance;
+            if next >= end - 1e-9 {
+                if let Some(point) = self.point_at_distance(end)
+                    && points
+                        .last()
+                        .is_none_or(|previous| previous.distance(point) > 1e-9)
+                {
+                    points.push(point);
+                }
+                return points;
+            }
+            let point = ends[index];
+            if points
+                .last()
+                .is_none_or(|previous| previous.distance(point) > 1e-9)
+            {
+                points.push(point);
+            }
+            travelled = next;
+            index = if self.closed {
+                (index + 1) % segment_count
+            } else {
+                index + 1
+            };
+            if index >= segment_count {
+                break;
+            }
+            advance = lengths[index];
+        }
+
+        if let Some(point) = self.point_at_distance(end)
+            && points
+                .last()
+                .is_none_or(|previous| previous.distance(point) > 1e-9)
+        {
+            points.push(point);
+        }
+        points
+    }
+
     /// Mirror every vertex around `pivot`.
     pub fn mirror(&mut self, pivot: Point, horizontal: bool, vertical: bool) {
         for point in &mut self.points {
@@ -1552,6 +1695,61 @@ mod tests {
             Point::new(3.0, 4.0),
         ]);
         assert!((path.length() - 12.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn path_distance_sampling_wraps_and_follows_vertices() {
+        let path = Path::closed(vec![
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 10.0),
+            Point::new(0.0, 10.0),
+        ]);
+        assert!((path.length() - 40.0).abs() < 1e-9);
+        assert_eq!(path.point_at_distance(0.0), Some(Point::new(0.0, 0.0)));
+        assert_eq!(path.point_at_distance(5.0), Some(Point::new(5.0, 0.0)));
+        assert_eq!(path.point_at_distance(15.0), Some(Point::new(10.0, 5.0)));
+        assert_eq!(path.point_at_distance(-5.0), Some(Point::new(0.0, 5.0)));
+
+        assert_eq!(
+            path.points_between(5.0, 15.0),
+            vec![
+                Point::new(5.0, 0.0),
+                Point::new(10.0, 0.0),
+                Point::new(10.0, 5.0),
+            ]
+        );
+        assert_eq!(
+            path.points_between(35.0, 45.0),
+            vec![
+                Point::new(0.0, 5.0),
+                Point::new(0.0, 0.0),
+                Point::new(5.0, 0.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn points_between_across_the_seam_keeps_contour_order() {
+        let path = Path::closed(vec![
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 10.0),
+            Point::new(0.0, 10.0),
+        ]);
+
+        // Start on the left edge and finish on the right edge after crossing
+        // the path seam. The resulting polyline must visit the seam vertex
+        // before the vertices that follow it.
+        assert_eq!(
+            path.points_between(35.0, 55.0),
+            vec![
+                Point::new(0.0, 5.0),
+                Point::new(0.0, 0.0),
+                Point::new(10.0, 0.0),
+                Point::new(10.0, 5.0),
+            ]
+        );
     }
 
     #[test]

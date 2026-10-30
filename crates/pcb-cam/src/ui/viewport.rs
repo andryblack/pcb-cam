@@ -620,6 +620,12 @@ fn dashed_line(painter: &Painter, start: Pos2, end: Pos2, dash: f32, gap: f32, s
     }
 }
 
+const TASK_PATH_HALO: f32 = 3.0;
+const TASK_PATH_STROKE: f32 = 1.2;
+const TASK_MARKER_STROKE: f32 = 1.0;
+const TASK_BRIDGE_HALO: f32 = 4.2;
+const TASK_BRIDGE_STROKE: f32 = 1.8;
+
 fn draw_task_overlay(painter: &Painter, rect: Rect, app: &PbcCam) {
     let Some(Selection::Task(id)) = app.selection else {
         return;
@@ -670,9 +676,12 @@ fn draw_task_overlay(painter: &Painter, rect: Rect, app: &PbcCam) {
                 }
                 painter.line_segment(
                     [start, end],
-                    Stroke::new(4.0, Color32::from_rgba_unmultiplied(0, 0, 0, 150)),
+                    Stroke::new(
+                        TASK_PATH_HALO,
+                        Color32::from_rgba_unmultiplied(0, 0, 0, 150),
+                    ),
                 );
-                painter.line_segment([start, end], Stroke::new(1.8, color));
+                painter.line_segment([start, end], Stroke::new(TASK_PATH_STROKE, color));
                 draw_drill_cross(painter, start, color);
                 draw_drill_cross(painter, end, color);
             }
@@ -718,7 +727,11 @@ fn draw_task_overlay(painter: &Painter, rect: Rect, app: &PbcCam) {
                     * 0.5
                     * f64::from(app.view.zoom())) as f32;
                 if path_radius > 0.5 {
-                    painter.circle_stroke(center, path_radius, Stroke::new(1.4, color));
+                    painter.circle_stroke(
+                        center,
+                        path_radius,
+                        Stroke::new(TASK_MARKER_STROKE, color),
+                    );
                     draw_drill_cross(painter, center, color);
                 } else {
                     draw_drill_position(
@@ -741,7 +754,7 @@ fn draw_task_overlay(painter: &Painter, rect: Rect, app: &PbcCam) {
                 let end = app
                     .view
                     .world_to_screen(pos2(slot.end.x as f32, slot.end.y as f32), rect);
-                painter.line_segment([start, end], Stroke::new(1.8, color));
+                painter.line_segment([start, end], Stroke::new(TASK_PATH_STROKE, color));
                 draw_drill_cross(painter, start, color);
                 draw_drill_cross(painter, end, color);
             }
@@ -752,6 +765,16 @@ fn draw_task_overlay(painter: &Painter, rect: Rect, app: &PbcCam) {
             };
             for path in cutout.toolpaths(gerber) {
                 draw_task_path(painter, rect, &app.view, &path, color);
+                for bridge in cutout.bridges(&path) {
+                    draw_bridge_span(
+                        painter,
+                        rect,
+                        &app.view,
+                        &path,
+                        bridge.start_mm,
+                        bridge.end_mm,
+                    );
+                }
             }
         }
         OperationKind::Engrave(_) => {
@@ -780,9 +803,41 @@ fn draw_task_path(painter: &Painter, rect: Rect, view: &ViewState, path: &Path, 
     }
     painter.add(Shape::line(
         points.clone(),
-        Stroke::new(4.5, Color32::from_rgba_unmultiplied(0, 0, 0, 165)),
+        Stroke::new(
+            TASK_PATH_HALO,
+            Color32::from_rgba_unmultiplied(0, 0, 0, 165),
+        ),
     ));
-    painter.add(Shape::line(points, Stroke::new(1.8, color)));
+    painter.add(Shape::line(points, Stroke::new(TASK_PATH_STROKE, color)));
+}
+
+fn draw_bridge_span(
+    painter: &Painter,
+    rect: Rect,
+    view: &ViewState,
+    path: &Path,
+    start_mm: f64,
+    end_mm: f64,
+) {
+    let points: Vec<Pos2> = path
+        .points_between(start_mm, end_mm)
+        .iter()
+        .map(|point| view.world_to_screen(pos2(point.x as f32, point.y as f32), rect))
+        .collect();
+    if points.len() < 2 {
+        return;
+    }
+    painter.add(Shape::line(
+        points.clone(),
+        Stroke::new(
+            TASK_BRIDGE_HALO,
+            Color32::from_rgba_unmultiplied(0, 0, 0, 190),
+        ),
+    ));
+    painter.add(Shape::line(
+        points,
+        Stroke::new(TASK_BRIDGE_STROKE, theme::accent()),
+    ));
 }
 
 fn draw_drill_position(
@@ -797,7 +852,7 @@ fn draw_drill_position(
     if !rect.expand(30.0).contains(center) {
         return;
     }
-    painter.circle_stroke(center, 5.0, Stroke::new(1.4, color));
+    painter.circle_stroke(center, 5.0, Stroke::new(TASK_MARKER_STROKE, color));
     draw_drill_cross(painter, center, color);
 }
 
@@ -808,14 +863,14 @@ fn draw_drill_cross(painter: &Painter, center: Pos2, color: Color32) {
             pos2(center.x - arm, center.y),
             pos2(center.x + arm, center.y),
         ],
-        Stroke::new(1.4, color),
+        Stroke::new(TASK_MARKER_STROKE, color),
     );
     painter.line_segment(
         [
             pos2(center.x, center.y - arm),
             pos2(center.x, center.y + arm),
         ],
-        Stroke::new(1.4, color),
+        Stroke::new(TASK_MARKER_STROKE, color),
     );
 }
 

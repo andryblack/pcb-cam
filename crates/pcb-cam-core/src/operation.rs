@@ -373,6 +373,73 @@ impl HoleMillOperation {
     }
 }
 
+/// One uncut "bridge" (tab) along a closed edge-cut contour.
+///
+/// The tool follows the bridge at the shallower start depth instead of the full
+/// cut depth, leaving material that holds the part in the stock.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BridgeSpan {
+    /// Point where the tool is raised to the bridge depth.
+    pub start: Point,
+    /// Point where the tool returns to the full cut depth.
+    pub end: Point,
+    /// Arc length from the path start to the bridge start, in millimetres.
+    pub start_mm: f64,
+    /// Arc length from the path start to the bridge end, in millimetres.
+    pub end_mm: f64,
+}
+
+impl BridgeSpan {
+    /// Length of the bridge along the contour, in millimetres.
+    pub fn length_mm(self) -> f64 {
+        (self.end_mm - self.start_mm).max(0.0)
+    }
+}
+
+fn default_bridge_length_mm() -> f64 {
+    2.0
+}
+
+fn default_bridge_start_depth_mm() -> f64 {
+    0.5
+}
+
+fn default_stepdown_mm() -> f64 {
+    0.5
+}
+
+fn default_clearance_width_mm() -> f64 {
+    2.0
+}
+
+/// Number of offset passes needed for `clearance_width_mm`.
+///
+/// The first pass sits at the configured offset and each following pass
+/// advances by `stepover_mm`.
+pub fn clearance_pass_count(clearance_width_mm: f64, stepover_mm: f64) -> u32 {
+    if !clearance_width_mm.is_finite()
+        || clearance_width_mm <= 0.0
+        || !stepover_mm.is_finite()
+        || stepover_mm <= 0.0
+    {
+        return 1;
+    }
+    // Tolerate floating-point noise such as 0.6 / 0.2 = 2.9999999999999996.
+    (((clearance_width_mm / stepover_mm) - 1e-9).ceil() as u32).max(1)
+}
+
+/// Number of depth passes needed to reach `depth_mm`.
+///
+/// The last pass is clamped to the total depth, so the pass count is the total
+/// depth divided by the requested step-down and rounded up.
+pub fn depth_pass_count(depth_mm: f64, stepdown_mm: f64) -> u32 {
+    if !depth_mm.is_finite() || depth_mm <= 0.0 || !stepdown_mm.is_finite() || stepdown_mm <= 0.0 {
+        return 1;
+    }
+    // Tolerate floating-point noise such as 1.5 / 0.5 = 3.0000000000000004.
+    (((depth_mm / stepdown_mm) - 1e-9).ceil() as u32).max(1)
+}
+
 /// Parameters of an edge cut (board outline or an internal cut-out).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CutoutOperation {
@@ -386,6 +453,9 @@ pub struct CutoutOperation {
     pub offset_mm: f64,
     /// Cut depth below the board surface, in millimetres.
     pub depth_mm: f64,
+    /// Depth increase between consecutive passes, in millimetres.
+    #[serde(default = "default_stepdown_mm")]
+    pub stepdown_mm: f64,
     /// Safe Z height, in millimetres.
     pub retract_mm: f64,
     /// XY feed rate.
@@ -394,6 +464,18 @@ pub struct CutoutOperation {
     pub plunge_mm_min: f64,
     /// Spindle speed.
     pub spindle_rpm: u32,
+    /// Length of each bridge along the contour, in millimetres.
+    #[serde(default = "default_bridge_length_mm")]
+    pub bridge_length_mm: f64,
+    /// Depth below the surface at which each bridge starts, in millimetres.
+    ///
+    /// While crossing a bridge the tool is raised to this depth, leaving the
+    /// material below it uncut.
+    #[serde(default = "default_bridge_start_depth_mm")]
+    pub bridge_start_depth_mm: f64,
+    /// Number of bridges per closed contour; zero disables bridges.
+    #[serde(default)]
+    pub bridge_count: u32,
 }
 
 impl CutoutOperation {
@@ -405,11 +487,33 @@ impl CutoutOperation {
             side: ContourSide::Outside,
             offset_mm: 0.0,
             depth_mm: 1.8,
+            stepdown_mm: default_stepdown_mm(),
             retract_mm: 3.0,
             feed_mm_min: 300.0,
             plunge_mm_min: 120.0,
             spindle_rpm: 10_000,
+            bridge_length_mm: default_bridge_length_mm(),
+            bridge_start_depth_mm: default_bridge_start_depth_mm(),
+            bridge_count: 0,
         }
+    }
+
+    /// Whether this task leaves bridges on its contours.
+    pub const fn has_bridges(&self) -> bool {
+        self.bridge_count > 0
+    }
+
+    /// Number of depth passes for the configured total depth and step-down.
+    pub fn pass_count(&self) -> u32 {
+        depth_pass_count(self.depth_mm, self.stepdown_mm)
+    }
+
+    /// Absolute cut depth of a one-based pass.
+    ///
+    /// The final pass is clamped to the task's total depth, so the last step may
+    /// be shallower than the configured step-down.
+    pub fn pass_depth(&self, pass: u32) -> f64 {
+        (self.stepdown_mm * f64::from(pass)).min(self.depth_mm)
     }
 
     /// Validate the task before generating G-code.
@@ -424,6 +528,26 @@ impl CutoutOperation {
         )?;
         if !self.offset_mm.is_finite() || self.offset_mm < 0.0 {
             return Err("edge cut offset must not be negative".into());
+        }
+        if !self.stepdown_mm.is_finite() || self.stepdown_mm <= 0.0 {
+            return Err("edge cut step-down must be greater than zero".into());
+        }
+        if !self.bridge_length_mm.is_finite() || self.bridge_length_mm < 0.0 {
+            return Err("bridge length must not be negative".into());
+        }
+        if !self.bridge_start_depth_mm.is_finite() || self.bridge_start_depth_mm < 0.0 {
+            return Err("bridge start depth must not be negative".into());
+        }
+        if self.bridge_count > 100 {
+            return Err("bridge count must be at most 100".into());
+        }
+        if self.has_bridges() {
+            if self.bridge_length_mm <= 0.0 {
+                return Err("bridge length must be greater than zero".into());
+            }
+            if self.bridge_start_depth_mm >= self.depth_mm {
+                return Err("bridge start depth must be above the cut depth".into());
+            }
         }
         Ok(())
     }
@@ -442,6 +566,91 @@ impl CutoutOperation {
             .filter(|path| path.points.len() >= 2)
             .collect()
     }
+
+    /// Bridges for one closed toolpath.
+    ///
+    /// A contour is split into as many equal perimeter sectors as bridges are
+    /// requested. Each bridge is centred on the midpoint of the longest edge
+    /// whose midpoint falls inside its sector; sectors without such an edge use
+    /// the sector midpoint. This keeps the bridges on long, straight edges while
+    /// spacing them evenly around the outline. A bridge is clamped to its sector,
+    /// so bridges never overlap.
+    pub fn bridges(&self, path: &Path) -> Vec<BridgeSpan> {
+        if !self.has_bridges() || !path.closed || path.points.len() < 2 {
+            return Vec::new();
+        }
+        let count = self.bridge_count as usize;
+        let segments = contour_segments(path);
+        let perimeter: f64 = segments.iter().map(|(_, length)| length).sum();
+        if count == 0 || perimeter <= 1e-9 {
+            return Vec::new();
+        }
+        let sector_width = perimeter / count as f64;
+        let max_half = (sector_width * 0.5 - 1e-6).max(0.0);
+        let half = (self.bridge_length_mm * 0.5).min(max_half);
+        if half <= 1e-9 {
+            return Vec::new();
+        }
+
+        let mut bridges = Vec::with_capacity(count);
+        for index in 0..count {
+            let sector_start = index as f64 * sector_width;
+            let sector_end = sector_start + sector_width;
+            let mut longest: Option<(f64, f64)> = None;
+            for (start_mm, length_mm) in &segments {
+                let midpoint = start_mm + length_mm * 0.5;
+                if midpoint >= sector_start - 1e-9
+                    && midpoint < sector_end
+                    && longest.is_none_or(|(best, _)| *length_mm > best)
+                {
+                    longest = Some((*length_mm, midpoint));
+                }
+            }
+            let center =
+                longest.map_or((sector_start + sector_end) * 0.5, |(_, midpoint)| midpoint);
+            let center = center.clamp(sector_start + half, sector_end - half);
+            let start_mm = center - half;
+            let end_mm = center + half;
+            let (Some(start), Some(end)) = (
+                path.point_at_distance(start_mm),
+                path.point_at_distance(end_mm),
+            ) else {
+                continue;
+            };
+            bridges.push(BridgeSpan {
+                start,
+                end,
+                start_mm,
+                end_mm,
+            });
+        }
+        bridges
+    }
+}
+
+/// Start distance and length of every nonzero segment of a closed contour.
+fn contour_segments(path: &Path) -> Vec<(f64, f64)> {
+    let count = path.points.len();
+    if count < 2 {
+        return Vec::new();
+    }
+    let mut segments = Vec::with_capacity(count);
+    let mut start_mm = 0.0;
+    for index in 0..count {
+        let (start, end) = if index + 1 < count {
+            (path.points[index], path.points[index + 1])
+        } else if path.closed && count > 2 {
+            (path.points[count - 1], path.points[0])
+        } else {
+            break;
+        };
+        let length = start.distance(end);
+        if length > 1e-9 {
+            segments.push((start_mm, length));
+        }
+        start_mm += length;
+    }
+    segments
 }
 
 /// Which side of a closed engraving contour the passes are placed on.
@@ -504,8 +713,11 @@ pub struct EngraveOperation {
     pub outline_offset_mm: f64,
     /// Initial offset from the copper edge, in millimetres.
     pub offset_mm: f64,
-    /// Number of offset passes for closed contours.
-    pub passes: u32,
+    /// Width of the area to clear, in millimetres.
+    ///
+    /// The pass count is derived from this width and the offset step.
+    #[serde(default = "default_clearance_width_mm")]
+    pub clearance_width_mm: f64,
     /// Offset increase between passes, in millimetres.
     pub stepover_mm: f64,
     /// Spindle speed.
@@ -530,11 +742,16 @@ impl EngraveOperation {
             side: EngraveSide::Outside,
             outline_offset_mm: 0.0,
             offset_mm: 0.0,
-            passes: 1,
+            clearance_width_mm: default_clearance_width_mm(),
             stepover_mm: 0.5,
             spindle_rpm: 12_000,
             boundary_layer: None,
         }
+    }
+
+    /// Number of offset passes for the configured clearing width.
+    pub fn pass_count(&self) -> u32 {
+        clearance_pass_count(self.clearance_width_mm, self.stepover_mm)
     }
 
     /// Validate the task before generating G-code.
@@ -553,16 +770,19 @@ impl EngraveOperation {
         if !self.offset_mm.is_finite() || self.offset_mm < 0.0 {
             return Err("clearance offset must not be negative".into());
         }
-        if self.passes == 0 {
-            return Err("clearance passes must be at least one".into());
+        if !self.clearance_width_mm.is_finite() || self.clearance_width_mm < 0.0 {
+            return Err("clearance width must not be negative".into());
         }
         if !self.stepover_mm.is_finite() || self.stepover_mm < 0.0 {
             return Err("clearance offset step must not be negative".into());
         }
-        if self.passes > 1 && self.stepover_mm <= 0.0 {
+        if self.clearance_width_mm > 0.0 && self.stepover_mm <= 0.0 {
             return Err(
-                "clearance offset step must be greater than zero for multiple passes".into(),
+                "clearance offset step must be greater than zero for a clearing width".into(),
             );
+        }
+        if self.pass_count() > 1_000 {
+            return Err("clearance width produces more than 1000 passes".into());
         }
         Ok(())
     }
@@ -576,7 +796,7 @@ impl EngraveOperation {
         gerber.isolation_paths(
             self.outline_offset_mm,
             self.offset_mm,
-            self.passes,
+            self.pass_count(),
             self.stepover_mm,
             self.side.sign(),
             boundary,
@@ -597,7 +817,7 @@ impl EngraveOperation {
             .isolation_passes_with_copper(
                 self.outline_offset_mm,
                 self.offset_mm,
-                self.passes,
+                self.pass_count(),
                 self.stepover_mm,
                 self.side.sign(),
                 boundary,
@@ -969,11 +1189,133 @@ mod tests {
         engrave.depth_mm = -1.0;
         assert!(engrave.validate().is_err());
         engrave.depth_mm = 0.2;
-        engrave.passes = 0;
-        assert!(engrave.validate().is_err());
-        engrave.passes = 2;
+        engrave.clearance_width_mm = 0.4;
         engrave.stepover_mm = 0.0;
         assert!(engrave.validate().is_err());
+        engrave.stepover_mm = 0.2;
+        assert!(engrave.validate().is_ok());
+        engrave.clearance_width_mm = -0.1;
+        assert!(engrave.validate().is_err());
+    }
+
+    #[test]
+    fn cutout_bridges_are_evenly_spaced_on_the_longest_edges() {
+        let path = Path::closed(vec![
+            Point::new(0.0, 0.0),
+            Point::new(80.0, 0.0),
+            Point::new(80.0, 50.0),
+            Point::new(0.0, 50.0),
+        ]);
+        let mut cutout = CutoutOperation::new(LayerId::new(1), ToolId::new(2));
+        cutout.bridge_count = 4;
+        cutout.bridge_length_mm = 2.0;
+
+        let bridges = cutout.bridges(&path);
+        assert_eq!(bridges.len(), 4);
+        let centers: Vec<Point> = bridges
+            .iter()
+            .map(|bridge| bridge.start.midpoint(bridge.end))
+            .collect();
+        assert_eq!(
+            centers,
+            vec![
+                Point::new(40.0, 0.0),
+                Point::new(80.0, 25.0),
+                Point::new(40.0, 50.0),
+                Point::new(0.0, 25.0),
+            ]
+        );
+        for bridge in &bridges {
+            assert!((bridge.length_mm() - 2.0).abs() < 1e-9);
+        }
+        for pair in bridges.windows(2) {
+            assert!(pair[0].end_mm <= pair[1].start_mm + 1e-9);
+        }
+
+        cutout.bridge_count = 0;
+        assert!(cutout.bridges(&path).is_empty());
+    }
+
+    #[test]
+    fn cutout_depth_passes_cover_the_total_depth() {
+        let mut cutout = CutoutOperation::new(LayerId::new(1), ToolId::new(2));
+        assert_eq!(cutout.stepdown_mm, 0.5);
+        assert_eq!(cutout.pass_count(), 4);
+        assert!((cutout.pass_depth(1) - 0.5).abs() < 1e-9);
+        assert!((cutout.pass_depth(3) - 1.5).abs() < 1e-9);
+        assert!((cutout.pass_depth(4) - 1.8).abs() < 1e-9);
+
+        cutout.stepdown_mm = 0.7;
+        assert_eq!(cutout.pass_count(), 3);
+        assert!((cutout.pass_depth(2) - 1.4).abs() < 1e-9);
+        assert!((cutout.pass_depth(3) - 1.8).abs() < 1e-9);
+
+        cutout.stepdown_mm = 5.0;
+        assert_eq!(cutout.pass_count(), 1);
+        assert!((cutout.pass_depth(1) - 1.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cutout_bridge_validation_rejects_inconsistent_settings() {
+        let mut cutout = CutoutOperation::new(LayerId::new(1), ToolId::new(2));
+        cutout.bridge_count = 1;
+        assert!(cutout.validate().is_ok());
+
+        cutout.stepdown_mm = 0.0;
+        assert!(cutout.validate().is_err());
+        cutout.stepdown_mm = 0.5;
+
+        cutout.bridge_length_mm = 0.0;
+        assert!(cutout.validate().is_err());
+        cutout.bridge_length_mm = 2.0;
+
+        cutout.bridge_start_depth_mm = cutout.depth_mm;
+        assert!(cutout.validate().is_err());
+        cutout.bridge_start_depth_mm = 0.5;
+
+        cutout.bridge_count = 101;
+        assert!(cutout.validate().is_err());
+    }
+
+    #[test]
+    fn cutout_missing_pass_fields_use_defaults() {
+        let cutout = CutoutOperation::new(LayerId::new(1), ToolId::new(2));
+        let mut value = serde_json::to_value(&cutout).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("stepdown_mm");
+        object.remove("bridge_length_mm");
+        object.remove("bridge_start_depth_mm");
+        object.remove("bridge_count");
+
+        let decoded: CutoutOperation = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.stepdown_mm, 0.5);
+        assert_eq!(decoded.bridge_length_mm, 2.0);
+        assert_eq!(decoded.bridge_start_depth_mm, 0.5);
+        assert_eq!(decoded.bridge_count, 0);
+        assert!(!decoded.has_bridges());
+    }
+
+    #[test]
+    fn clearance_width_defaults_and_pass_count() {
+        let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(2));
+        assert_eq!(clearance.clearance_width_mm, 2.0);
+        assert_eq!(clearance.pass_count(), 4);
+
+        clearance.stepover_mm = 0.3;
+        assert_eq!(clearance.pass_count(), 7);
+
+        clearance.clearance_width_mm = 0.0;
+        assert_eq!(clearance.pass_count(), 1);
+    }
+
+    #[test]
+    fn clearance_width_defaults_when_missing() {
+        let clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(2));
+        let mut value = serde_json::to_value(&clearance).unwrap();
+        value.as_object_mut().unwrap().remove("clearance_width_mm");
+
+        let decoded: EngraveOperation = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.clearance_width_mm, 2.0);
     }
 
     #[test]
@@ -995,7 +1337,7 @@ mod tests {
         let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
         clearance.side = EngraveSide::Outside;
         clearance.offset_mm = 0.1;
-        clearance.passes = 3;
+        clearance.clearance_width_mm = 0.6;
         clearance.stepover_mm = 0.2;
         let paths = clearance.toolpaths(&gerber, None);
         assert_eq!(paths.len(), 3);
@@ -1028,6 +1370,7 @@ mod tests {
         };
         let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
         clearance.offset_mm = 0.1;
+        clearance.clearance_width_mm = 0.0;
         let paths = clearance.toolpaths(&gerber, None);
         // A trace ending in a pad must not leave a separate circular contour
         // inside the pad. The union has one exterior at this offset.
@@ -1050,7 +1393,7 @@ mod tests {
         let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
         clearance.side = EngraveSide::Outside;
         clearance.offset_mm = 0.1;
-        clearance.passes = 2;
+        clearance.clearance_width_mm = 0.6;
         clearance.stepover_mm = 0.5;
         let paths = clearance.toolpaths(&gerber, None);
         assert_eq!(paths.len(), 2);
@@ -1088,7 +1431,7 @@ mod tests {
         let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
         clearance.outline_offset_mm = 0.1;
         clearance.offset_mm = 0.1;
-        clearance.passes = 2;
+        clearance.clearance_width_mm = 0.4;
         clearance.stepover_mm = 0.2;
         let paths = clearance.toolpaths(&gerber, Some(&boundary));
         let widths: Vec<f64> = paths
@@ -1131,6 +1474,7 @@ mod tests {
         let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
         clearance.outline_offset_mm = 0.0;
         clearance.offset_mm = 0.1;
+        clearance.clearance_width_mm = 0.0;
         let paths = clearance.toolpaths(&gerber, Some(&boundary));
         assert!(paths.iter().any(|path| {
             path.bounds()
@@ -1163,6 +1507,7 @@ mod tests {
         let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
         clearance.outline_offset_mm = 0.0;
         clearance.offset_mm = 0.1;
+        clearance.clearance_width_mm = 0.0;
         let paths = clearance.toolpaths(&gerber, Some(&boundary));
         assert!(!paths.is_empty());
         let bounds = paths[0].bounds().unwrap();
@@ -1255,6 +1600,7 @@ mod tests {
         };
         let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
         clearance.offset_mm = 0.1;
+        clearance.clearance_width_mm = 0.0;
         let paths = clearance.toolpaths(&gerber, Some(&boundary));
         assert_eq!(paths.len(), 1);
         let bounds = paths[0].bounds().unwrap();
@@ -1286,6 +1632,7 @@ mod tests {
         };
         let mut clearance = EngraveOperation::new(LayerId::new(1), ToolId::new(1));
         clearance.offset_mm = 0.1;
+        clearance.clearance_width_mm = 0.0;
         let paths = clearance.toolpaths(&gerber, Some(&boundary));
         assert!(!paths.is_empty());
         assert!(paths.iter().all(|path| path.closed));

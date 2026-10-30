@@ -288,18 +288,34 @@ fn task_subtitle(app: &PbcCam, task: &pcb_cam_core::Task) -> String {
                 spot.depth_mm
             )
         }
-        pcb_cam_core::OperationKind::Cutout(cutout) => format!(
-            "Edge cut · {} · {} · {:.2} mm{enabled}",
-            tool_label(app, task),
-            cutout.side.label(),
-            cutout.depth_mm
-        ),
+        pcb_cam_core::OperationKind::Cutout(cutout) => {
+            let passes = cutout.pass_count();
+            let depth = if passes > 1 {
+                format!(" · {passes} passes × {:.2} mm", cutout.stepdown_mm)
+            } else {
+                String::new()
+            };
+            let bridges = if cutout.has_bridges() {
+                format!(
+                    " · {} bridges × {:.2} mm",
+                    cutout.bridge_count, cutout.bridge_length_mm
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                "Edge cut · {} · {} · {:.2} mm{depth}{bridges}{enabled}",
+                tool_label(app, task),
+                cutout.side.label(),
+                cutout.depth_mm
+            )
+        }
         pcb_cam_core::OperationKind::Engrave(engrave) => format!(
-            "Clearance · {} · {}p · {} {:.2} · {:.2} mm{enabled}",
+            "Clearance · {} · {} · width {:.2} mm · {}p · {:.2} mm{enabled}",
             tool_label(app, task),
-            engrave.passes,
             engrave.side.label(),
-            engrave.offset_mm,
+            engrave.clearance_width_mm,
+            engrave.pass_count(),
             engrave.depth_mm
         ),
     }

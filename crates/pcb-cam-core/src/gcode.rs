@@ -582,17 +582,119 @@ impl<'a> ProgramBuilder<'a> {
 
         self.select_tool(&tool, cutout.retract_mm, cutout.spindle_rpm)?;
         let _ = writeln!(self.text, "(Side: {})", cutout.side.label());
-        for path in &paths {
+        let pass_count = cutout.pass_count();
+        let _ = writeln!(
+            self.text,
+            "(Depth passes: {pass_count} × {:.3} mm step, total {:.3} mm)",
+            cutout.stepdown_mm, cutout.depth_mm
+        );
+        if cutout.has_bridges() {
+            let _ = writeln!(
+                self.text,
+                "(Bridges: {} per contour, {:.3} mm long, raised to Z-{:.3})",
+                cutout.bridge_count, cutout.bridge_length_mm, cutout.bridge_start_depth_mm
+            );
+        }
+        for pass in 1..=pass_count {
+            let depth = cutout.pass_depth(pass);
+            if pass_count > 1 {
+                let _ = writeln!(
+                    self.text,
+                    "(Depth pass {pass}/{pass_count} at Z-{depth:.3})"
+                );
+            }
+            for path in &paths {
+                self.cut_contour(path, cutout, depth);
+            }
+        }
+        self.last_safe_z = cutout.retract_mm;
+        Ok(())
+    }
+
+    /// Cut one contour at `depth`, leaving shallow bridges where the task
+    /// requests them.
+    ///
+    /// Passes that do not reach the bridge start depth cut the whole contour:
+    /// they only remove material above the future tab.
+    fn cut_contour(&mut self, path: &Path, cutout: &crate::CutoutOperation, depth: f64) {
+        let bridge_depth = cutout.bridge_start_depth_mm;
+        let bridges = if cutout.has_bridges() && depth > bridge_depth + 1e-9 {
+            cutout.bridges(path)
+        } else {
+            Vec::new()
+        };
+        if bridges.is_empty() {
             self.cut_path(
                 path,
-                cutout.depth_mm,
+                depth,
                 cutout.retract_mm,
                 cutout.feed_mm_min,
                 cutout.plunge_mm_min,
             );
+            return;
         }
-        self.last_safe_z = cutout.retract_mm;
-        Ok(())
+
+        let perimeter = path.length();
+        if perimeter <= 1e-9 {
+            return;
+        }
+        let retract = cutout.retract_mm;
+        let feed = cutout.feed_mm_min;
+        let plunge = cutout.plunge_mm_min;
+        let count = bridges.len();
+
+        // Start just after the first bridge so the contour is entered on a cut
+        // span; the same bridge is crossed again when the loop closes.
+        let start_mm = bridges[0].end_mm;
+        let Some(start) = path.point_at_distance(start_mm) else {
+            return;
+        };
+        let _ = writeln!(self.text, "G00 Z{retract:.3}");
+        self.travel_xy(self.gx(start.x), self.gy(start.y));
+        let _ = writeln!(self.text, "G01 Z-{depth:.3} F{plunge:.1}");
+
+        let mut cursor = start_mm;
+        let mut cut_length_mm = 0.0;
+        for step in 0..count {
+            let next_bridge = &bridges[(step + 1) % count];
+            let cut_end_mm = if step + 1 == count {
+                bridges[0].start_mm + perimeter
+            } else {
+                next_bridge.start_mm
+            };
+            for point in path.points_between(cursor, cut_end_mm).iter().skip(1) {
+                let _ = writeln!(
+                    self.text,
+                    "G01 X{:.3} Y{:.3} F{feed:.1}",
+                    self.gx(point.x),
+                    self.gy(point.y)
+                );
+            }
+            cut_length_mm += (cut_end_mm - cursor).max(0.0);
+
+            let bridge = next_bridge;
+            let _ = writeln!(self.text, "G01 Z-{bridge_depth:.3} F{plunge:.1}");
+            for point in path
+                .points_between(bridge.start_mm, bridge.end_mm)
+                .iter()
+                .skip(1)
+            {
+                let _ = writeln!(
+                    self.text,
+                    "G01 X{:.3} Y{:.3} F{feed:.1}",
+                    self.gx(point.x),
+                    self.gy(point.y)
+                );
+            }
+            cut_length_mm += bridge.length_mm();
+            let _ = writeln!(self.text, "G01 Z-{depth:.3} F{plunge:.1}");
+            cursor = bridge.end_mm;
+        }
+        let _ = writeln!(self.text, "G00 Z{retract:.3}");
+
+        self.position = start;
+        self.path_count += 1;
+        self.cut_length_mm += cut_length_mm;
     }
 
     fn append_engrave(
@@ -609,10 +711,11 @@ impl<'a> ProgramBuilder<'a> {
         };
         let tool = self.task_tool(task)?.clone();
         let boundary = engrave.boundary_path(self.project);
+        let pass_count = engrave.pass_count();
         let passes = gerber.isolation_passes(
             engrave.outline_offset_mm,
             engrave.offset_mm,
-            engrave.passes,
+            pass_count,
             engrave.stepover_mm,
             engrave.side.sign(),
             boundary.as_ref(),
@@ -624,11 +727,12 @@ impl<'a> ProgramBuilder<'a> {
         self.select_tool(&tool, engrave.retract_mm, engrave.spindle_rpm)?;
         let _ = writeln!(
             self.text,
-            "(Clearance {} side, offset {:.3} mm, {} pass{}, step {:.3} mm)",
+            "(Clearance {} side, offset {:.3} mm, width {:.3} mm, {} pass{}, step {:.3} mm)",
             engrave.side.label(),
             engrave.offset_mm,
-            engrave.passes,
-            if engrave.passes == 1 { "" } else { "es" },
+            engrave.clearance_width_mm,
+            pass_count,
+            if pass_count == 1 { "" } else { "es" },
             engrave.stepover_mm
         );
         for pass in passes {
@@ -1213,13 +1317,138 @@ mod tests {
 
     #[test]
     fn contour_cut_offsets_outside_the_outline() {
-        let (project, library, id) = project_with_outline();
+        let (mut project, library, id) = project_with_outline();
+        let OperationKind::Cutout(cutout) = project.task_mut(id).unwrap().kind_mut() else {
+            panic!("expected edge cut");
+        };
+        cutout.stepdown_mm = 5.0;
         let program = generate_task_gcode(&project, &library, project.task(id).unwrap()).unwrap();
         assert_eq!(program.task_count, 1);
         assert_eq!(program.path_count, 1);
         assert!(program.text.contains("T1 M6"));
         assert!(program.text.contains("X-0.500 Y-0.500"));
         assert!(program.text.contains("G01 Z-1.800"));
+    }
+
+    #[test]
+    fn contour_cut_steps_down_through_depth_passes() {
+        let (mut project, library, id) = project_with_outline();
+        let OperationKind::Cutout(cutout) = project.task_mut(id).unwrap().kind_mut() else {
+            panic!("expected edge cut");
+        };
+        cutout.stepdown_mm = 0.5;
+
+        let program = generate_task_gcode(&project, &library, project.task(id).unwrap()).unwrap();
+        assert_eq!(program.path_count, 4);
+        assert!(
+            program
+                .text
+                .contains("(Depth passes: 4 × 0.500 mm step, total 1.800 mm)")
+        );
+        assert!(program.text.contains("(Depth pass 4/4 at Z-1.800)"));
+        assert_eq!(program.text.matches("G01 Z-0.500").count(), 1);
+        assert_eq!(program.text.matches("G01 Z-1.000").count(), 1);
+        assert_eq!(program.text.matches("G01 Z-1.500").count(), 1);
+        assert_eq!(program.text.matches("G01 Z-1.800").count(), 1);
+    }
+
+    #[test]
+    fn contour_cut_leaves_bridges_at_the_start_depth() {
+        let (mut project, library, id) = project_with_outline();
+        let OperationKind::Cutout(cutout) = project.task_mut(id).unwrap().kind_mut() else {
+            panic!("expected edge cut");
+        };
+        cutout.stepdown_mm = 5.0;
+        cutout.bridge_count = 4;
+        cutout.bridge_length_mm = 2.0;
+        cutout.bridge_start_depth_mm = 0.5;
+
+        let program = generate_task_gcode(&project, &library, project.task(id).unwrap()).unwrap();
+        assert_eq!(program.path_count, 1);
+        assert!(
+            program
+                .text
+                .contains("(Bridges: 4 per contour, 2.000 mm long, raised to Z-0.500)")
+        );
+        // Four bridge crossings raise the tool and four plunges return to the
+        // full depth, in addition to the initial plunge.
+        assert_eq!(program.text.matches("G01 Z-0.500").count(), 4);
+        assert_eq!(program.text.matches("G01 Z-1.800").count(), 5);
+        assert!(!program.text.contains("G00 Z-0.500"));
+    }
+
+    #[test]
+    fn bridged_cutout_keeps_all_cutting_moves_on_the_contour() {
+        use crate::preview::GcodePreview;
+
+        let mut project = Project::new("Bridge diagonal");
+        let path = Path::closed(vec![
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(80.0, 0.0),
+            Point::new(80.0, 50.0),
+            Point::new(0.0, 50.0),
+        ]);
+        let layer = LayerGeometry::Gerber(GerberLayer {
+            primitives: vec![Primitive::Stroke {
+                path,
+                aperture: Aperture::circle(0.2),
+                polarity: crate::Polarity::Dark,
+            }],
+            source_units: Some(crate::Unit::Millimeter),
+            warnings: Vec::new(),
+        });
+        let layer_id = project.add_layer("Outline", None, None, layer);
+        let library = ToolLibrary::new();
+        let tool = library.closest(ToolKind::EndMill, 1.0).unwrap();
+        let mut cutout = CutoutOperation::new(layer_id, tool);
+        cutout.offset_mm = 0.5;
+        cutout.stepdown_mm = 5.0;
+        cutout.bridge_count = 1;
+        cutout.bridge_length_mm = 2.0;
+        cutout.bridge_start_depth_mm = 0.5;
+        let id = project.add_task("Cutout", OperationKind::Cutout(cutout));
+
+        let program = generate_task_gcode(&project, &library, project.task(id).unwrap()).unwrap();
+        let preview = GcodePreview::from_program(&program);
+        let diagonal = preview.moves.iter().find(|movement| {
+            if !movement.kind.is_cutting() {
+                return false;
+            }
+            let dx = (movement.end.x - movement.start.x).abs();
+            let dy = (movement.end.y - movement.start.y).abs();
+            dx > 1e-6 && dy > 1e-6
+        });
+
+        // The offset outline is rectangular, so every cutting move must stay on
+        // an axis-aligned contour edge. A move that changes both X and Y is a
+        // jump across the contour.
+        assert!(
+            diagonal.is_none(),
+            "diagonal cutting move {:?} -> {:?}",
+            diagonal.map(|movement| movement.start),
+            diagonal.map(|movement| movement.end)
+        );
+    }
+
+    #[test]
+    fn bridges_are_left_only_on_passes_below_the_start_depth() {
+        let (mut project, library, id) = project_with_outline();
+        let OperationKind::Cutout(cutout) = project.task_mut(id).unwrap().kind_mut() else {
+            panic!("expected edge cut");
+        };
+        cutout.depth_mm = 1.0;
+        cutout.stepdown_mm = 0.5;
+        cutout.bridge_count = 4;
+        cutout.bridge_length_mm = 2.0;
+        cutout.bridge_start_depth_mm = 0.5;
+
+        let program = generate_task_gcode(&project, &library, project.task(id).unwrap()).unwrap();
+        assert_eq!(program.path_count, 2);
+        // The 0.5 mm pass cuts the whole contour. The 1.0 mm pass raises over
+        // each bridge four times and plunges back after each crossing.
+        assert_eq!(program.text.matches("G01 Z-0.500").count(), 5);
+        assert_eq!(program.text.matches("G01 Z-1.000").count(), 5);
     }
 
     #[test]
@@ -1246,13 +1475,17 @@ mod tests {
         };
         engrave.side = crate::EngraveSide::Outside;
         engrave.offset_mm = 0.1;
-        engrave.passes = 3;
+        engrave.clearance_width_mm = 0.6;
         engrave.stepover_mm = 0.2;
 
         let program =
             generate_task_gcode(&project, &library, project.task(engrave_id).unwrap()).unwrap();
         assert!(program.path_count >= 3);
-        assert!(program.text.contains("offset 0.100 mm, 3 passes"));
+        assert!(
+            program
+                .text
+                .contains("width 0.600 mm, 3 passes, step 0.200 mm")
+        );
         assert!(program.text.contains("G01 Z-0.200"));
     }
 
