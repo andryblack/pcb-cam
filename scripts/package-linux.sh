@@ -49,7 +49,11 @@ done
 
 rm -f "$TARBALL"
 tar -C "$ROOT/dist" -czf "$TARBALL" "$STAGE_NAME"
-tar -tzf "$TARBALL" | grep -qx "$STAGE_NAME/pcb-cam"
+
+# Read the whole listing before matching: piping tar into `grep -q` can give
+# tar SIGPIPE and fail the script under `set -o pipefail`.
+listing="$(tar -tzf "$TARBALL")"
+grep -qx "$STAGE_NAME/pcb-cam" <<<"$listing"
 
 echo
 echo "Created:"
