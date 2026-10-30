@@ -139,7 +139,46 @@ open dist/PCB-CAM.app
 
 The script builds a release binary, assembles `PCB-CAM.app` with the icon,
 `Info.plist`, `LICENSE` and third-party notices, ad-hoc signs it and creates
-`dist/PCB-CAM-macos.zip`.
+`dist/PCB-CAM-macos.zip`. Pass `--universal` for a fat arm64 + x86_64 bundle;
+`--binary PATH` packages an existing binary and `--output ZIP` chooses the
+archive path.
+
+### Release builds
+
+Releases are published by
+[`.github/workflows/release.yml`](.github/workflows/release.yml) when a tag
+named `vMAJOR.MINOR.PATCH` is pushed. The tag must match
+`workspace.package.version` in `Cargo.toml`; otherwise the workflow fails
+before building anything. Versions with a `-suffix` are published as
+pre-releases.
+
+```bash
+git tag -a v0.1.0 -m "PCB-CAM 0.1.0"
+git push origin v0.1.0
+```
+
+Every release contains:
+
+| Asset | Contents |
+| --- | --- |
+| `pcb-cam-<version>-linux-x86_64.tar.gz` | Release binary, `LICENSE`, third-party notices |
+| `pcb-cam-<version>-windows-x86_64.zip` | Release executable, `LICENSE`, third-party notices |
+| `pcb-cam-<version>-macos-universal.zip` | Universal (arm64 + x86_64) `PCB-CAM.app`, notices in `Contents/Resources` |
+| `SHA256SUMS.txt` | SHA-256 checksums for the archives |
+
+The Linux build targets Ubuntu 22.04 / glibc 2.35 and needs the GUI libraries
+listed under [Requirements](#requirements). The macOS bundle and the Windows
+executable are unsigned; Gatekeeper or SmartScreen may warn on first launch.
+
+The platform archives can also be produced locally:
+
+```bash
+./scripts/package-linux.sh              # Linux
+pwsh -File scripts/package-windows.ps1  # Windows (PowerShell)
+./scripts/package-macos.sh --universal  # macOS
+```
+
+Each script writes the archive to `dist/`.
 
 ## Quick start
 
@@ -234,10 +273,10 @@ to pan. Double-click the 3D view to fit the toolpath.
 ├── THIRD_PARTY_LICENSES.md      # generated third-party and font notices
 ├── assets/                      # icon and synthetic demo files
 ├── docs/                        # screenshot
-├── scripts/                     # license generation, icons and macOS packaging
+├── scripts/                     # license generation, icons and platform packaging
 ├── third-party/
 │   └── fonts.md                 # handwritten font notices
-└── .github/workflows/           # CI
+└── .github/workflows/           # CI and tag-driven releases
 ```
 
 ## Architecture

@@ -1,0 +1,183 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  validate:
+    name: Validate tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check tag matches the workspace version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
+            echo "error: tag '$tag' must look like vMAJOR.MINOR.PATCH (optionally -suffix)" >&2
+            exit 1
+          fi
+
+          version="${BASH_REMATCH[1]}"
+          crate_version="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [[ -z "$crate_version" ]]; then
+            echo "error: could not read workspace.package.version from Cargo.toml" >&2
+            exit 1
+          fi
+          if [[ "$version" != "$crate_version" ]]; then
+            echo "error: tag '$tag' does not match workspace version '$crate_version'" >&2
+            exit 1
+          fi
+
+          test -s LICENSE
+          test -s THIRD_PARTY_LICENSES.md
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Build on 22.04 so the binary links against glibc 2.35, not the
+          # newer baseline of ubuntu-latest.
+          - name: Linux x86_64
+            os: ubuntu-22.04
+            artifact: pcb-cam-linux-x86_64
+            asset: dist/*.tar.gz
+          - name: Windows x86_64
+            os: windows-latest
+            artifact: pcb-cam-windows-x86_64
+            asset: dist/*.zip
+          - name: macOS universal
+            os: macos-latest
+            artifact: pcb-cam-macos-universal
+            asset: dist/*.zip
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxrandr-dev libxi-dev \
+            libxcursor-dev libegl1-mesa-dev libgl1-mesa-dev libvulkan-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: ./scripts/package-linux.sh
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/package-windows.ps1
+
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: >-
+          ./scripts/package-macos.sh --universal
+          --output "dist/pcb-cam-${{ needs.validate.outputs.version }}-macos-universal.zip"
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          archives=(pcb-cam-*.tar.gz pcb-cam-*.zip)
+          if (( ${#archives[@]} != 3 )); then
+            echo "error: expected three release archives, found ${#archives[@]}" >&2
+            ls -l
+            exit 1
+          fi
+
+          sha256sum "${archives[@]}" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists; uploading assets"
+            gh release upload "$TAG" dist/* --clobber
+          else
+            args=(--verify-tag --title "PCB-CAM $VERSION" --generate-notes)
+            if [[ "$PRERELEASE" == "true" ]]; then
+              args+=(--prerelease)
+            fi
+            gh release create "$TAG" dist/* "${args[@]}"
+          fi

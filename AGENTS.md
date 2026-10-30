@@ -45,9 +45,18 @@ cargo test -p pcb-cam-engine --test samples   # end-to-end demo smoke test
 ### Packaging and assets
 
 ```bash
-./scripts/package-macos.sh       # macOS only; writes dist/PCB-CAM.app and zip
-python3 scripts/gen_icons.py     # needs Pillow; rewrites assets/icon.*
+./scripts/package-linux.sh              # Linux only; versioned tar.gz in dist/
+pwsh -File scripts/package-windows.ps1  # Windows only; versioned zip in dist/
+./scripts/package-macos.sh --universal  # macOS; universal app bundle and zip in dist/
+python3 scripts/gen_icons.py            # needs Pillow; rewrites assets/icon.*
 ```
+
+Releases are tag-driven: pushing a `vX.Y.Z` tag runs
+`.github/workflows/release.yml`. The tag must equal
+`workspace.package.version`; the workflow builds Linux (Ubuntu 22.04), Windows
+and a universal macOS bundle, then attaches the archives and `SHA256SUMS.txt`
+to the GitHub Release. Versions with a `-suffix` are published as pre-releases.
+Only push a release tag after CI is green.
 
 ### Licenses
 
@@ -65,8 +74,8 @@ cargo install --locked cargo-about --version 0.9.3 --features cli
   decision; dual-licensed crates may use their permissive option.
 - Regenerate the notices whenever `Cargo.lock` changes, and commit the result.
 - Release artifacts must contain both `LICENSE` and `THIRD_PARTY_LICENSES.md`.
-  CI stages them next to the binaries, and the macOS bundle stores them in
-  `Contents/Resources`.
+  The release scripts stage them next to the binaries, and the macOS bundle
+  stores them in `Contents/Resources`.
 - The About window embeds the notices via `include_str!` and exposes them from
   **Help → Third-party licenses**. Rebuild after regenerating the file; no
   separate UI update is needed.
@@ -128,7 +137,8 @@ pcb-cam-core  ←  pcb-cam-engine  ←  pcb-cam
   user-facing behaviour or known limitations change.
 - Version comes from `workspace.package.version`; the milestone label also
   appears in `crates/pcb-cam/src/ui/menu.rs`, the About dialog and the README
-  status. Keep them in sync on release.
+  status. Keep them in sync on release, including the cargo-bundle
+  `[package.metadata.bundle]` version in `crates/pcb-cam/Cargo.toml`.
 - Keep `docs/` limited to images referenced by documentation. Currently that is
   only `docs/preview.png`; do not add unreferenced screenshots or stale assets.
 - Keep `assets/samples/README.md` in sync when the demo files or demo tasks
@@ -139,7 +149,8 @@ pcb-cam-core  ←  pcb-cam-engine  ←  pcb-cam
 ## Workflow
 
 - Do not create commits, rewrite history or push unless explicitly asked. Leave
-  changes in the working tree for review.
+  changes in the working tree for review. Creating and pushing release tags is
+  likewise a release action; do it only when explicitly asked.
 - Do not commit build output (`target/`, `dist/`) or local editor files.
 - Before finishing: run the required checks, review the diff, and update the
   docs affected by the change.
