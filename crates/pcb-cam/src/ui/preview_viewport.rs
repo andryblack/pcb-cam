@@ -281,8 +281,8 @@ fn draw_paths(
 
         let executed_end = active.unwrap_or(0).min(path.move_end);
         let mut bright: Vec<Pos2> = Vec::new();
-        for index in path.move_start..executed_end {
-            for point in &data.moves[index].points {
+        for movement in data.moves.iter().take(executed_end).skip(path.move_start) {
+            for point in &movement.points {
                 let screen = projector.point(*point);
                 if bright.last() != Some(&screen) {
                     bright.push(screen);
