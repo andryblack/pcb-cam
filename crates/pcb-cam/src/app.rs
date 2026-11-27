@@ -1760,13 +1760,8 @@ impl PbcCam {
         let result = if !task.enabled() {
             Err(format!("Task `{name}` is disabled."))
         } else {
-            let warnings = self.task_warnings(id);
-            if warnings.is_empty() {
-                generate_task_gcode(self.project(), self.session.tool_library(), task)
-                    .map_err(|error| format!("{name}: {error}"))
-            } else {
-                Err(format!("{name}: {}", warnings.join(" ")))
-            }
+            generate_task_gcode(self.project(), self.session.tool_library(), task)
+                .map_err(|error| format!("{name}: {error}"))
         };
         match result {
             Ok(program) => {
@@ -1789,22 +1784,8 @@ impl PbcCam {
             self.set_error(message);
             return;
         }
-        let blocked: Vec<String> = self
-            .project()
-            .tasks()
-            .iter()
-            .filter(|task| task.enabled())
-            .filter_map(|task| {
-                let warnings = self.task_warnings(task.id());
-                (!warnings.is_empty()).then(|| format!("{}: {}", task.name(), warnings.join(" ")))
-            })
-            .collect();
-        let result = if blocked.is_empty() {
-            generate_all_gcode(self.project(), self.session.tool_library())
-                .map_err(|error| format!("G-code generation failed: {error}"))
-        } else {
-            Err(blocked.join("\n"))
-        };
+        let result = generate_all_gcode(self.project(), self.session.tool_library())
+            .map_err(|error| format!("G-code generation failed: {error}"));
         match result {
             Ok(program) => {
                 let tasks = program.task_count;

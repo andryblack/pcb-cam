@@ -300,11 +300,21 @@ impl<'a> ProgramBuilder<'a> {
         );
         let _ = writeln!(self.text, "G00 Z{:.3}", drill.retract_mm);
 
+        if selected_holes
+            .iter()
+            .any(|hole| hole.diameter_mm > tool.diameter_mm() + 1e-6)
+        {
+            let _ = writeln!(
+                self.text,
+                "(Drill Ø{:.3} mm is smaller than some source holes; they are drilled undersize)",
+                tool.diameter_mm()
+            );
+        }
         let selected_holes = order_holes_nearest(selected_holes, self.position);
         for hole in selected_holes {
-            if (hole.diameter_mm - tool.diameter_mm()).abs() > 1e-6 {
+            if tool.diameter_mm() > hole.diameter_mm + 1e-6 {
                 return Err(format!(
-                    "drill Ø{:.3} mm does not match source hole {:.3} mm; use hole milling or a matching drill",
+                    "drill Ø{:.3} mm is larger than source hole {:.3} mm; use a smaller drill or hole milling",
                     tool.diameter_mm(),
                     hole.diameter_mm
                 ));
@@ -1288,8 +1298,8 @@ mod tests {
     }
 
     #[test]
-    fn drill_requires_a_matching_diameter() {
-        let mut project = Project::new("Drill mismatch");
+    fn drill_allows_a_smaller_diameter_and_drills_undersize() {
+        let mut project = Project::new("Drill smaller");
         let layer_id = project.add_layer(
             "Drills",
             None,
@@ -1315,8 +1325,42 @@ mod tests {
             "Drill 0.8",
             OperationKind::Drill(DrillOperation::new(layer_id, tool)),
         );
+        let program = generate_task_gcode(&project, &library, project.task(id).unwrap()).unwrap();
+        assert_eq!(program.hole_count, 1);
+        assert!(program.text.contains("drilled undersize"));
+        assert!(program.text.contains("X5.000 Y5.000"));
+    }
+
+    #[test]
+    fn drill_rejects_a_larger_diameter() {
+        let mut project = Project::new("Drill larger");
+        let layer_id = project.add_layer(
+            "Drills",
+            None,
+            None,
+            LayerGeometry::Excellon(ExcellonLayer {
+                tools: vec![DrillTool {
+                    number: 1,
+                    diameter_mm: 0.8,
+                }],
+                holes: vec![DrillHit {
+                    position: Point::new(5.0, 5.0),
+                    tool: 1,
+                    diameter_mm: 0.8,
+                }],
+                slots: Vec::new(),
+                source_units: Some(crate::Unit::Millimeter),
+                warnings: Vec::new(),
+            }),
+        );
+        let library = ToolLibrary::new();
+        let tool = library.closest(ToolKind::Drill, 1.0).unwrap();
+        let id = project.add_task(
+            "Drill 1.0",
+            OperationKind::Drill(DrillOperation::new(layer_id, tool)),
+        );
         let error = generate_task_gcode(&project, &library, project.task(id).unwrap()).unwrap_err();
-        assert!(error.contains("does not match"));
+        assert!(error.contains("larger than source hole"), "{error}");
     }
 
     #[test]

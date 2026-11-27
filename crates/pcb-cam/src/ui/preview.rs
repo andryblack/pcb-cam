@@ -250,7 +250,7 @@ fn info_panel(ui: &mut Ui, app: &mut PbcCam) {
                                 ui.add_space(4.0);
                                 ui.label(
                                     RichText::new(
-                                        "Return to the workspace and fix the task warnings, then preview again.",
+                                        "Return to the workspace, fix the task settings, then preview again.",
                                     )
                                     .size(10.0)
                                     .color(theme::text_muted()),

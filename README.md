@@ -100,8 +100,10 @@ diameters.
   radius/diameter, and both values remain editable.
 
 Drilling tasks can be created even when the library has no exact drill: the
-closest cutter is selected and the inspector explains the mismatch. G-code
-export is blocked while a task has unresolved warnings.
+closest cutter is selected and the inspector keeps showing the mismatch. A
+smaller drill is allowed and drills the hole undersize; preview and export
+fail only when the task cannot produce valid G-code, for example when the
+drill is larger than the hole.
 
 ## Requirements
 

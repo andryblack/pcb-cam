@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use pcb_cam_core::{
     ContourSide, CutoutContour, CutoutOperation, DrillOperation, EngraveOperation, EngraveSide,
-    FlipAxes, HoleMillOperation, LayerGeometry, LayerId, Operation, OperationId, OperationKind,
-    Point, Project, SpotDrillOperation, ToolId, ToolKind, UNTITLED_PROJECT, generate_all_gcode,
+    FlipAxes, HoleMillOperation, LayerGeometry, LayerId, OperationId, OperationKind, Point,
+    Project, SpotDrillOperation, ToolId, ToolKind, UNTITLED_PROJECT, generate_all_gcode,
     generate_task_gcode, parse_excellon, parse_gerber,
 };
 use serde::Deserialize;
@@ -1166,14 +1166,6 @@ pub(crate) fn export_task_gcode(session: &mut Session, params: &Value) -> Result
     let task = project
         .task(OperationId::new(params.task))
         .ok_or_else(|| format!("task {} does not exist", params.task))?;
-    let warnings = task_warnings(session, task);
-    if !warnings.is_empty() {
-        return Err(blocked_message(&[format!(
-            "{}: {}",
-            task.name(),
-            warnings.join(" ")
-        )]));
-    }
     let program = generate_task_gcode(project, session.tool_library(), task)?;
     write_program(&params.path, &program)?;
     Ok(program_json(
@@ -1186,47 +1178,9 @@ pub(crate) fn export_task_gcode(session: &mut Session, params: &Value) -> Result
 pub(crate) fn export_gcode(session: &mut Session, params: &Value) -> Result<Value, String> {
     let params: ExportGcodeParams = parse_params(params)?;
     let project = session.project();
-    let blocked: Vec<String> = project
-        .tasks()
-        .iter()
-        .filter(|task| task.enabled())
-        .filter_map(|task| {
-            let warnings = task_warnings(session, task);
-            (!warnings.is_empty()).then(|| format!("{}: {}", task.name(), warnings.join(" ")))
-        })
-        .collect();
-    if !blocked.is_empty() {
-        return Err(blocked_message(&blocked));
-    }
     let program = generate_all_gcode(project, session.tool_library())?;
     write_program(&params.path, &program)?;
     Ok(program_json(&params.path, &program, None))
-}
-
-fn task_warnings(session: &Session, task: &Operation) -> Vec<String> {
-    let (layer_id, tool_id) = match task.kind() {
-        OperationKind::Drill(drill) => (drill.layer, drill.tool),
-        OperationKind::HoleMill(mill) => (mill.layer, mill.tool),
-        _ => return Vec::new(),
-    };
-    let Some(layer) = session.project().layer(layer_id) else {
-        return vec!["source layer no longer exists".to_owned()];
-    };
-    let LayerGeometry::Excellon(excellon) = layer.geometry() else {
-        return vec!["source is not an Excellon layer".to_owned()];
-    };
-    let Some(tool) = session.tool_library().tool(tool_id) else {
-        return vec!["machining tool no longer exists".to_owned()];
-    };
-    match task.kind() {
-        OperationKind::Drill(drill) => drill.warnings(excellon, tool),
-        OperationKind::HoleMill(mill) => mill.warnings(excellon, tool),
-        _ => Vec::new(),
-    }
-}
-
-fn blocked_message(blocked: &[String]) -> String {
-    format!("G-code blocked by task warnings:\n{}", blocked.join("\n"))
 }
 
 fn write_program(path: &Path, program: &pcb_cam_core::GcodeProgram) -> Result<(), String> {
