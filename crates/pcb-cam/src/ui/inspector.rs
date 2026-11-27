@@ -728,7 +728,7 @@ fn task_details(
                 );
                 ui.label(
                     RichText::new(
-                        "Bridges leave short uncut tabs that hold the part in the stock. Count 0 disables them. Each closed contour gets that many bridges, spaced evenly around its perimeter and centred on its longest edges.",
+                        "Bridges leave short uncut tabs that hold the part in the stock. Count 0 disables them. Length is measured at the narrowest point of the finished tab; the cutter is raised half a tool diameter before and after it. Each closed contour gets that many bridges, spaced evenly around its perimeter and centred on its longest edges.",
                     )
                     .size(9.0)
                     .color(theme::text_faint()),

@@ -591,7 +591,7 @@ impl<'a> ProgramBuilder<'a> {
         if cutout.has_bridges() {
             let _ = writeln!(
                 self.text,
-                "(Bridges: {} per contour, {:.3} mm long, raised to Z-{:.3})",
+                "(Bridges: {} per contour, {:.3} mm of material, raised to Z-{:.3})",
                 cutout.bridge_count, cutout.bridge_length_mm, cutout.bridge_start_depth_mm
             );
         }
@@ -604,7 +604,7 @@ impl<'a> ProgramBuilder<'a> {
                 );
             }
             for path in &paths {
-                self.cut_contour(path, cutout, depth);
+                self.cut_contour(path, cutout, depth, tool.diameter_mm() * 0.5);
             }
         }
         self.last_safe_z = cutout.retract_mm;
@@ -616,10 +616,16 @@ impl<'a> ProgramBuilder<'a> {
     ///
     /// Passes that do not reach the bridge start depth cut the whole contour:
     /// they only remove material above the future tab.
-    fn cut_contour(&mut self, path: &Path, cutout: &crate::CutoutOperation, depth: f64) {
+    fn cut_contour(
+        &mut self,
+        path: &Path,
+        cutout: &crate::CutoutOperation,
+        depth: f64,
+        tool_radius: f64,
+    ) {
         let bridge_depth = cutout.bridge_start_depth_mm;
         let bridges = if cutout.has_bridges() && depth > bridge_depth + 1e-9 {
-            cutout.bridges(path)
+            cutout.bridges(path, tool_radius * 2.0)
         } else {
             Vec::new()
         };
@@ -644,8 +650,9 @@ impl<'a> ProgramBuilder<'a> {
         let count = bridges.len();
 
         // Start just after the first bridge so the contour is entered on a cut
-        // span; the same bridge is crossed again when the loop closes.
-        let start_mm = bridges[0].end_mm;
+        // span; the same bridge is crossed again when the loop closes. The
+        // raised span is one cutter diameter longer than the finished tab.
+        let start_mm = bridges[0].raised_end_mm(tool_radius);
         let Some(start) = path.point_at_distance(start_mm) else {
             return;
         };
@@ -658,9 +665,9 @@ impl<'a> ProgramBuilder<'a> {
         for step in 0..count {
             let next_bridge = &bridges[(step + 1) % count];
             let cut_end_mm = if step + 1 == count {
-                bridges[0].start_mm + perimeter
+                bridges[0].raised_start_mm(tool_radius) + perimeter
             } else {
-                next_bridge.start_mm
+                next_bridge.raised_start_mm(tool_radius)
             };
             for point in path.points_between(cursor, cut_end_mm).iter().skip(1) {
                 let _ = writeln!(
@@ -675,7 +682,10 @@ impl<'a> ProgramBuilder<'a> {
             let bridge = next_bridge;
             let _ = writeln!(self.text, "G01 Z-{bridge_depth:.3} F{plunge:.1}");
             for point in path
-                .points_between(bridge.start_mm, bridge.end_mm)
+                .points_between(
+                    bridge.raised_start_mm(tool_radius),
+                    bridge.raised_end_mm(tool_radius),
+                )
                 .iter()
                 .skip(1)
             {
@@ -686,9 +696,9 @@ impl<'a> ProgramBuilder<'a> {
                     self.gy(point.y)
                 );
             }
-            cut_length_mm += bridge.length_mm();
+            cut_length_mm += bridge.length_mm() + tool_radius * 2.0;
             let _ = writeln!(self.text, "G01 Z-{depth:.3} F{plunge:.1}");
-            cursor = bridge.end_mm;
+            cursor = bridge.raised_end_mm(tool_radius);
         }
         let _ = writeln!(self.text, "G00 Z{retract:.3}");
 
@@ -1368,13 +1378,56 @@ mod tests {
         assert!(
             program
                 .text
-                .contains("(Bridges: 4 per contour, 2.000 mm long, raised to Z-0.500)")
+                .contains("(Bridges: 4 per contour, 2.000 mm of material, raised to Z-0.500)")
         );
         // Four bridge crossings raise the tool and four plunges return to the
         // full depth, in addition to the initial plunge.
         assert_eq!(program.text.matches("G01 Z-0.500").count(), 4);
         assert_eq!(program.text.matches("G01 Z-1.800").count(), 5);
         assert!(!program.text.contains("G00 Z-0.500"));
+    }
+
+    #[test]
+    fn bridge_raised_span_includes_the_tool_diameter() {
+        let (mut project, library, id) = project_with_outline();
+        let OperationKind::Cutout(cutout) = project.task_mut(id).unwrap().kind_mut() else {
+            panic!("expected edge cut");
+        };
+        cutout.stepdown_mm = 5.0;
+        cutout.bridge_count = 4;
+        cutout.bridge_length_mm = 2.0;
+        cutout.bridge_start_depth_mm = 0.5;
+
+        let program = generate_task_gcode(&project, &library, project.task(id).unwrap()).unwrap();
+        let lines: Vec<&str> = program.text.lines().collect();
+        let raise = lines
+            .iter()
+            .rposition(|line| line.starts_with("G01 Z-0.500"))
+            .expect("bridge raise");
+        let before = lines[..raise]
+            .iter()
+            .rev()
+            .find_map(|line| g01_x(line))
+            .expect("cut before bridge");
+        let after = lines[raise + 1..]
+            .iter()
+            .find_map(|line| g01_x(line))
+            .expect("raised bridge move");
+
+        // The fixture uses a 1.0 mm end mill, so a 2.0 mm tab needs a 3.0 mm
+        // raised span: half a diameter before and after the material.
+        assert!(
+            (after - before - 3.0).abs() < 1e-9,
+            "raised span {before:.3}..{after:.3} does not include the cutter diameter"
+        );
+    }
+
+    fn g01_x(line: &str) -> Option<f64> {
+        line.strip_prefix("G01 X")?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
     }
 
     #[test]

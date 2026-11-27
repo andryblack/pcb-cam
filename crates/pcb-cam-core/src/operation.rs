@@ -370,23 +370,36 @@ impl HoleMillOperation {
 /// One uncut "bridge" (tab) along a closed edge-cut contour.
 ///
 /// The tool follows the bridge at the shallower start depth instead of the full
-/// cut depth, leaving material that holds the part in the stock.
+/// cut depth, leaving material that holds the part in the stock. The span
+/// describes the finished tab: the cutter is raised half a tool diameter before
+/// [`Self::start_mm`] and returns to full depth half a diameter after
+/// [`Self::end_mm`], so the tab is narrowest between those distances.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BridgeSpan {
-    /// Point where the tool is raised to the bridge depth.
+    /// Point where the finished tab starts.
     pub start: Point,
-    /// Point where the tool returns to the full cut depth.
+    /// Point where the finished tab ends.
     pub end: Point,
-    /// Arc length from the path start to the bridge start, in millimetres.
+    /// Arc length from the path start to the tab start, in millimetres.
     pub start_mm: f64,
-    /// Arc length from the path start to the bridge end, in millimetres.
+    /// Arc length from the path start to the tab end, in millimetres.
     pub end_mm: f64,
 }
 
 impl BridgeSpan {
-    /// Length of the bridge along the contour, in millimetres.
+    /// Length of the finished tab at its narrowest point, in millimetres.
     pub fn length_mm(self) -> f64 {
         (self.end_mm - self.start_mm).max(0.0)
+    }
+
+    /// Toolpath distance where the cutter is raised for a cutter of `tool_radius`.
+    pub fn raised_start_mm(self, tool_radius: f64) -> f64 {
+        self.start_mm - tool_radius
+    }
+
+    /// Toolpath distance where the cutter returns to full depth.
+    pub fn raised_end_mm(self, tool_radius: f64) -> f64 {
+        self.end_mm + tool_radius
     }
 }
 
@@ -561,18 +574,26 @@ impl CutoutOperation {
             .collect()
     }
 
-    /// Bridges for one closed toolpath.
+    /// Bridges for one closed toolpath and cutter diameter.
     ///
     /// A contour is split into as many equal perimeter sectors as bridges are
     /// requested. Each bridge is centred on the midpoint of the longest edge
     /// whose midpoint falls inside its sector; sectors without such an edge use
     /// the sector midpoint. This keeps the bridges on long, straight edges while
-    /// spacing them evenly around the outline. A bridge is clamped to its sector,
-    /// so bridges never overlap.
-    pub fn bridges(&self, path: &Path) -> Vec<BridgeSpan> {
+    /// spacing them evenly around the outline.
+    ///
+    /// [`Self::bridge_length_mm`] is measured on the finished tab at its
+    /// narrowest point, so the raised span is one cutter diameter longer. A
+    /// bridge is clamped to its sector, keeping the raised spans inside their
+    /// sectors and preventing overlaps.
+    pub fn bridges(&self, path: &Path, tool_diameter_mm: f64) -> Vec<BridgeSpan> {
         if !self.has_bridges() || !path.closed || path.points.len() < 2 {
             return Vec::new();
         }
+        if !tool_diameter_mm.is_finite() || tool_diameter_mm <= 0.0 {
+            return Vec::new();
+        }
+        let tool_radius = tool_diameter_mm * 0.5;
         let count = self.bridge_count as usize;
         let segments = contour_segments(path);
         let perimeter: f64 = segments.iter().map(|(_, length)| length).sum();
@@ -580,11 +601,12 @@ impl CutoutOperation {
             return Vec::new();
         }
         let sector_width = perimeter / count as f64;
-        let max_half = (sector_width * 0.5 - 1e-6).max(0.0);
+        let max_half = ((sector_width - tool_diameter_mm) * 0.5 - 1e-6).max(0.0);
         let half = (self.bridge_length_mm * 0.5).min(max_half);
         if half <= 1e-9 {
             return Vec::new();
         }
+        let padding = half + tool_radius;
 
         let mut bridges = Vec::with_capacity(count);
         for index in 0..count {
@@ -602,7 +624,11 @@ impl CutoutOperation {
             }
             let center =
                 longest.map_or((sector_start + sector_end) * 0.5, |(_, midpoint)| midpoint);
-            let center = center.clamp(sector_start + half, sector_end - half);
+            // Keep a hair of margin so a raised span never starts exactly at
+            // the contour seam, where arc-length wrapping would take the long
+            // way around the contour.
+            let upper = (sector_end - padding - 1e-6).max(sector_start + padding);
+            let center = center.clamp(sector_start + padding, upper);
             let start_mm = center - half;
             let end_mm = center + half;
             let (Some(start), Some(end)) = (
@@ -1214,7 +1240,7 @@ mod tests {
         cutout.bridge_count = 4;
         cutout.bridge_length_mm = 2.0;
 
-        let bridges = cutout.bridges(&path);
+        let bridges = cutout.bridges(&path, 1.0);
         assert_eq!(bridges.len(), 4);
         let centers: Vec<Point> = bridges
             .iter()
@@ -1237,7 +1263,44 @@ mod tests {
         }
 
         cutout.bridge_count = 0;
-        assert!(cutout.bridges(&path).is_empty());
+        assert!(cutout.bridges(&path, 1.0).is_empty());
+    }
+
+    #[test]
+    fn cutout_bridge_length_is_measured_on_the_material() {
+        let path = Path::closed(vec![
+            Point::new(0.0, 0.0),
+            Point::new(80.0, 0.0),
+            Point::new(80.0, 50.0),
+            Point::new(0.0, 50.0),
+        ]);
+        let mut cutout = CutoutOperation::new(LayerId::new(1), ToolId::new(2));
+        cutout.bridge_count = 1;
+        cutout.bridge_length_mm = 2.0;
+
+        let bridges = cutout.bridges(&path, 1.0);
+        assert_eq!(bridges.len(), 1);
+        assert!((bridges[0].length_mm() - 2.0).abs() < 1e-9);
+        let raised = bridges[0].raised_end_mm(0.5) - bridges[0].raised_start_mm(0.5);
+        assert!((raised - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cutout_bridge_clamps_the_raised_span_to_its_sector() {
+        let path = Path::closed(vec![
+            Point::new(0.0, 0.0),
+            Point::new(80.0, 0.0),
+            Point::new(80.0, 50.0),
+            Point::new(0.0, 50.0),
+        ]);
+        let mut cutout = CutoutOperation::new(LayerId::new(1), ToolId::new(2));
+        cutout.bridge_count = 4;
+        cutout.bridge_length_mm = 100.0;
+
+        let sector_width = path.length() / 4.0;
+        for bridge in cutout.bridges(&path, 1.0) {
+            assert!(bridge.length_mm() + 1.0 <= sector_width + 1e-6);
+        }
     }
 
     #[test]

@@ -82,9 +82,12 @@ diameters.
   pass count is `ceil(depth / stepdown)` and the last pass is clamped to the
   total depth.
 - **Bridges** — tabs keep the part in the stock. `Count` is the number of
-  bridges per closed contour (`0` disables them), `Length` defaults to `2 mm`
-  and `Start depth` to `0.5 mm`. While crossing a bridge the cutter is raised to
-  the start depth, leaving the material below it intact.
+  bridges per closed contour (`0` disables them). `Length` defaults to `2 mm`
+  and is measured at the narrowest point of the finished tab: the cutter is
+  raised half a tool diameter before it and returns to full depth half a
+  diameter after it. `Start depth` defaults to `0.5 mm`. While crossing a
+  bridge the cutter is raised to the start depth, leaving the material below
+  it intact.
 - **Clearance width** — the width of the copper-free band, default `2 mm`.
   The pass count is `ceil(width / offset step)`; a width of `0` keeps one pass.
   New edge-cut and clearance tasks derive their offsets from the selected tool

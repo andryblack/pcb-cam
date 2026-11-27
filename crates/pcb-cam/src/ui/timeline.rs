@@ -297,7 +297,7 @@ fn task_subtitle(app: &PbcCam, task: &pcb_cam_core::Task) -> String {
             };
             let bridges = if cutout.has_bridges() {
                 format!(
-                    " · {} bridges × {:.2} mm",
+                    " · {} bridges × {:.2} mm tab",
                     cutout.bridge_count, cutout.bridge_length_mm
                 )
             } else {

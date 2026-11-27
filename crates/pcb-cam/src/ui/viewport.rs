@@ -763,9 +763,14 @@ fn draw_task_overlay(painter: &Painter, rect: Rect, app: &PbcCam) {
             let LayerGeometry::Gerber(gerber) = layer.geometry() else {
                 return;
             };
+            let tool_diameter = app
+                .session
+                .tool_library()
+                .tool(cutout.tool)
+                .map_or(0.0, |tool| tool.diameter_mm());
             for path in cutout.toolpaths(gerber) {
                 draw_task_path(painter, rect, &app.view, &path, color);
-                for bridge in cutout.bridges(&path) {
+                for bridge in cutout.bridges(&path, tool_diameter) {
                     draw_bridge_span(
                         painter,
                         rect,
