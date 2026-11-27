@@ -81,8 +81,6 @@ pub struct DrillOperation {
     pub plunge_mm_min: f64,
     /// Dwell at the bottom of each hole, in seconds.
     pub dwell_s: f64,
-    /// Z step-down for helical interpolation, in millimetres.
-    pub stepdown_mm: f64,
     /// Spindle speed.
     pub spindle_rpm: u32,
 }
@@ -99,7 +97,6 @@ impl DrillOperation {
             feed_mm_min: 300.0,
             plunge_mm_min: 120.0,
             dwell_s: 0.1,
-            stepdown_mm: 0.5,
             spindle_rpm: 10_000,
         }
     }
@@ -183,9 +180,6 @@ impl DrillOperation {
         )?;
         if !self.dwell_s.is_finite() || self.dwell_s < 0.0 {
             return Err("dwell must not be negative".into());
-        }
-        if !self.stepdown_mm.is_finite() || self.stepdown_mm <= 0.0 {
-            return Err("helical step-down must be greater than zero".into());
         }
         Ok(())
     }
@@ -1102,6 +1096,16 @@ mod tests {
     fn drill_defaults_validate() {
         let drill = DrillOperation::new(LayerId::new(1), ToolId::new(1));
         assert!(drill.validate().is_ok());
+    }
+
+    #[test]
+    fn drill_ignores_removed_stepdown_field() {
+        let drill = DrillOperation::new(LayerId::new(1), ToolId::new(1));
+        let mut value = serde_json::to_value(&drill).unwrap();
+        assert!(value.get("stepdown_mm").is_none());
+        value["stepdown_mm"] = serde_json::json!(0.3);
+        let decoded: DrillOperation = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded, drill);
     }
 
     #[test]

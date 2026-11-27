@@ -139,7 +139,6 @@ pub(crate) enum TaskDraftKind {
         feed: f64,
         plunge: f64,
         dwell: f64,
-        stepdown: f64,
         spindle: u32,
     },
     SpotDrill {
@@ -208,7 +207,6 @@ impl TaskDraft {
                     feed: drill.feed_mm_min,
                     plunge: drill.plunge_mm_min,
                     dwell: drill.dwell_s,
-                    stepdown: drill.stepdown_mm,
                     spindle: drill.spindle_rpm,
                 }
             }
@@ -295,7 +293,6 @@ impl TaskDraft {
                 feed,
                 plunge,
                 dwell,
-                stepdown,
                 spindle,
             } => (
                 "task.update_drill",
@@ -309,7 +306,6 @@ impl TaskDraft {
                     "feed": feed,
                     "plunge": plunge,
                     "dwell": dwell,
-                    "stepdown": stepdown,
                     "spindle": spindle,
                 }),
             ),

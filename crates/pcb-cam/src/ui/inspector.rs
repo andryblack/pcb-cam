@@ -553,7 +553,6 @@ fn task_details(
                 feed,
                 plunge,
                 dwell,
-                stepdown,
                 spindle,
             } => {
                 ui.add_space(8.0);
@@ -581,7 +580,6 @@ fn task_details(
                 commit |= inline_f64(ui, "Feed", feed, 1.0..=10_000.0, " mm/min");
                 commit |= inline_f64(ui, "Plunge", plunge, 1.0..=5_000.0, " mm/min");
                 commit |= inline_f64(ui, "Dwell", dwell, 0.0..=10.0, " s");
-                commit |= inline_f64(ui, "Helical step", stepdown, 0.05..=10.0, " mm");
                 commit |= inline_u32(ui, "Spindle", spindle, 0..=60_000, " rpm", 100.0);
             }
             TaskDraftKind::SpotDrill {

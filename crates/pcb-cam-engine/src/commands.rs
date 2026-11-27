@@ -105,7 +105,6 @@ struct OperationAddDrillParams {
     feed: Option<f64>,
     plunge: Option<f64>,
     dwell: Option<f64>,
-    stepdown: Option<f64>,
     spindle: Option<u32>,
 }
 
@@ -136,9 +135,6 @@ struct OperationUpdateSpotDrillParams {
     dwell: Option<f64>,
     spindle: Option<u32>,
 }
-
-type OperationAddHoleMillParams = OperationAddDrillParams;
-type OperationUpdateHoleMillParams = OperationUpdateDrillParams;
 
 #[derive(Debug, Deserialize)]
 struct OperationAddCutoutParams {
@@ -222,6 +218,35 @@ struct ExportTaskGcodeParams {
 
 #[derive(Debug, Deserialize)]
 struct OperationUpdateDrillParams {
+    id: u64,
+    name: Option<String>,
+    tool: Option<u64>,
+    source_tools: Option<Vec<u32>>,
+    depth: Option<f64>,
+    retract: Option<f64>,
+    feed: Option<f64>,
+    plunge: Option<f64>,
+    dwell: Option<f64>,
+    spindle: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperationAddHoleMillParams {
+    layer: u64,
+    name: Option<String>,
+    tool: Option<u64>,
+    source_tools: Option<Vec<u32>>,
+    depth: Option<f64>,
+    retract: Option<f64>,
+    feed: Option<f64>,
+    plunge: Option<f64>,
+    dwell: Option<f64>,
+    stepdown: Option<f64>,
+    spindle: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperationUpdateHoleMillParams {
     id: u64,
     name: Option<String>,
     tool: Option<u64>,
@@ -956,12 +981,8 @@ pub(crate) fn operation_add_drill(session: &mut Session, params: &Value) -> Resu
     drill.retract_mm = machining.safe_z_mm;
     drill.feed_mm_min = machining.mill_feed_mm_min;
     drill.plunge_mm_min = machining.drill_plunge_mm_min;
-    drill.stepdown_mm = machining.helical_stepdown_mm;
     drill.spindle_rpm = machining.spindle_rpm;
     drill.source_tools = filter;
-    if let Some(stepdown) = params.stepdown {
-        drill.stepdown_mm = stepdown;
-    }
     if let Some(depth) = params.depth {
         drill.depth_mm = depth;
     }
@@ -1016,9 +1037,6 @@ pub(crate) fn operation_update_drill(
     }
     if let Some(source_tools) = params.source_tools {
         drill.source_tools = source_tools.into_iter().collect();
-    }
-    if let Some(stepdown) = params.stepdown {
-        drill.stepdown_mm = stepdown;
     }
     if let Some(depth) = params.depth {
         drill.depth_mm = depth;
@@ -2126,7 +2144,6 @@ M30
                     "id": task,
                     "tool": end_mill,
                     "source_tools": [1],
-                    "stepdown": 0.3,
                 }),
             )
             .unwrap();
@@ -2136,7 +2153,6 @@ M30
             panic!("expected drill task");
         };
         assert_eq!(drill.source_tools.len(), 1);
-        assert_eq!(drill.stepdown_mm, 0.3);
     }
 
     #[test]
