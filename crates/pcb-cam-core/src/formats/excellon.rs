@@ -3,7 +3,8 @@
 //! Supports the common Excellon 2 subset emitted by KiCad, Eagle and
 //! Gerbv: `M48` headers, metric/inch units, tool definitions, decimal or
 //! fixed-format coordinates, drill hits, `G85` slots and `M15`/`M16`
-//! routed slots.
+//! routed slots. Header-only files without hits are accepted as empty layers,
+//! since KiCad emits those for boards without NPTH holes.
 
 use std::collections::BTreeMap;
 
@@ -22,6 +23,7 @@ pub fn parse_excellon(source: &str) -> Result<ExcellonLayer, ParseError> {
         }
         if line == "M48" {
             parser.in_header = true;
+            parser.header_seen = true;
             continue;
         }
         if line == "%" {
@@ -44,6 +46,7 @@ pub fn parse_excellon(source: &str) -> Result<ExcellonLayer, ParseError> {
 struct Parser {
     line: usize,
     in_header: bool,
+    header_seen: bool,
     units: Option<Unit>,
     unit_warning: bool,
     coordinate_decimals: u32,
@@ -64,6 +67,7 @@ impl Parser {
         Self {
             line: 0,
             in_header: false,
+            header_seen: false,
             units: None,
             unit_warning: false,
             coordinate_decimals: 3,
@@ -347,10 +351,16 @@ impl Parser {
             self.warn("routing started with M15 but never stopped with M16");
         }
         if self.holes.is_empty() && self.slots.is_empty() {
-            return Err(ParseError::new(
-                self.line,
-                "Excellon file contains no drill hits or slots",
-            ));
+            // KiCad emits a valid, empty NPTH file when the board has no
+            // non-plated holes. Accept it only when the file actually looks
+            // like an Excellon program; arbitrary text must still fail.
+            if !self.header_seen {
+                return Err(ParseError::new(
+                    self.line,
+                    "Excellon file contains no drill hits or slots",
+                ));
+            }
+            self.warn("the file contains no drill hits or slots");
         }
         let factor = match self.units {
             Some(Unit::Inch) => 25.4,
@@ -420,6 +430,37 @@ fn split_coordinate_groups(line: &str) -> Vec<Vec<(char, String)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_empty_npth_file_as_an_empty_layer() {
+        let source = "\
+M48
+; DRILL file KiCad 10.0.4 date 2026-11-27T13:23:43
+; FORMAT={-:-/ absolute / metric / decimal}
+; #@! TF.FileFunction,NonPlated,1,2,NPTH
+FMAT,2
+METRIC
+%
+G90
+G05
+M30
+";
+        let layer = parse_excellon(source).unwrap();
+        assert!(layer.holes.is_empty());
+        assert!(layer.slots.is_empty());
+        assert!(layer.tools.is_empty());
+        assert!(
+            layer
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("no drill hits or slots"))
+        );
+    }
+
+    #[test]
+    fn rejects_text_that_is_not_an_excellon_program() {
+        assert!(parse_excellon("This is not a drill file.\n").is_err());
+    }
 
     #[test]
     fn parses_metric_decimal_drills() {
