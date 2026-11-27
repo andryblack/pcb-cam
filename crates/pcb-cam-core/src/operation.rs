@@ -447,6 +447,18 @@ pub fn depth_pass_count(depth_mm: f64, stepdown_mm: f64) -> u32 {
     (((depth_mm / stepdown_mm) - 1e-9).ceil() as u32).max(1)
 }
 
+/// One closed contour selected for an edge-cut task.
+///
+/// `index` refers to the contour's position in
+/// [`GerberLayer::closed_contours`](crate::GerberLayer::closed_contours).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CutoutContour {
+    /// Index into the source layer's closed contours.
+    pub index: usize,
+    /// Which side of this contour the cutter follows.
+    pub side: ContourSide,
+}
+
 /// Parameters of an edge cut (board outline or an internal cut-out).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CutoutOperation {
@@ -454,8 +466,12 @@ pub struct CutoutOperation {
     pub layer: LayerId,
     /// Machining tool from the user library.
     pub tool: ToolId,
-    /// Which side of each contour to follow.
-    pub side: ContourSide,
+    /// Contours included in the task, in layer order.
+    ///
+    /// An empty list keeps the pre-selection behaviour of cutting every closed
+    /// contour with [`ContourSide::Outside`]; it is accepted for old projects.
+    #[serde(default)]
+    pub contours: Vec<CutoutContour>,
     /// Offset from the selected contour, in millimetres.
     pub offset_mm: f64,
     /// Cut depth below the board surface, in millimetres.
@@ -491,7 +507,7 @@ impl CutoutOperation {
         Self {
             layer,
             tool,
-            side: ContourSide::Outside,
+            contours: Vec::new(),
             offset_mm: 0.0,
             depth_mm: 1.8,
             stepdown_mm: default_stepdown_mm(),
@@ -559,17 +575,27 @@ impl CutoutOperation {
         Ok(())
     }
 
-    /// Offset all closed contours by the explicit edge-cut offset.
+    /// Offset the selected closed contours by the edge-cut offset.
     pub fn toolpaths(&self, gerber: &GerberLayer) -> Vec<Path> {
-        let distance = match self.side {
-            ContourSide::Outside => self.offset_mm,
-            ContourSide::Inside => -self.offset_mm,
-            ContourSide::OnLine => 0.0,
-        };
-        gerber
-            .closed_contours()
-            .into_iter()
-            .filter_map(|contour| crate::geometry::offset_closed_path(&contour, distance))
+        let contours = gerber.closed_contours();
+        if self.contours.is_empty() {
+            return contours
+                .iter()
+                .filter_map(|contour| crate::geometry::offset_closed_path(contour, self.offset_mm))
+                .filter(|path| path.points.len() >= 2)
+                .collect();
+        }
+        self.contours
+            .iter()
+            .filter_map(|selection| {
+                let contour = contours.get(selection.index)?;
+                let distance = match selection.side {
+                    ContourSide::Outside => self.offset_mm,
+                    ContourSide::Inside => -self.offset_mm,
+                    ContourSide::OnLine => 0.0,
+                };
+                crate::geometry::offset_closed_path(contour, distance)
+            })
             .filter(|path| path.points.len() >= 2)
             .collect()
     }
@@ -1264,6 +1290,69 @@ mod tests {
 
         cutout.bridge_count = 0;
         assert!(cutout.bridges(&path, 1.0).is_empty());
+    }
+
+    #[test]
+    fn cutout_toolpaths_follow_selected_contours_and_sides() {
+        let outer = Path::closed(vec![
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 10.0),
+            Point::new(0.0, 10.0),
+        ]);
+        let inner = Path::closed(vec![
+            Point::new(3.0, 3.0),
+            Point::new(7.0, 3.0),
+            Point::new(7.0, 7.0),
+            Point::new(3.0, 7.0),
+        ]);
+        let layer = GerberLayer {
+            primitives: vec![
+                Primitive::Stroke {
+                    path: outer,
+                    aperture: Aperture::circle(0.1),
+                    polarity: Polarity::Dark,
+                },
+                Primitive::Stroke {
+                    path: inner,
+                    aperture: Aperture::circle(0.1),
+                    polarity: Polarity::Dark,
+                },
+            ],
+            source_units: Some(crate::Unit::Millimeter),
+            warnings: Vec::new(),
+        };
+        let mut cutout = CutoutOperation::new(LayerId::new(1), ToolId::new(2));
+        cutout.offset_mm = 1.0;
+        cutout.contours = vec![
+            CutoutContour {
+                index: 0,
+                side: ContourSide::Outside,
+            },
+            CutoutContour {
+                index: 1,
+                side: ContourSide::Inside,
+            },
+        ];
+
+        let paths = cutout.toolpaths(&layer);
+        assert_eq!(paths.len(), 2);
+        let outer_bounds = paths[0].bounds().unwrap();
+        assert!((outer_bounds.min.x + 1.0).abs() < 1e-9);
+        assert!((outer_bounds.max.x - 11.0).abs() < 1e-9);
+        let inner_bounds = paths[1].bounds().unwrap();
+        assert!((inner_bounds.min.x - 4.0).abs() < 1e-9);
+        assert!((inner_bounds.max.x - 6.0).abs() < 1e-9);
+
+        cutout.contours = vec![CutoutContour {
+            index: 1,
+            side: ContourSide::OnLine,
+        }];
+        let paths = cutout.toolpaths(&layer);
+        assert_eq!(paths.len(), 1);
+        let bounds = paths[0].bounds().unwrap();
+        assert!((bounds.min.x - 3.0).abs() < 1e-9);
+        assert!((bounds.max.x - 7.0).abs() < 1e-9);
     }
 
     #[test]

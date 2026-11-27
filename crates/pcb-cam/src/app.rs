@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use eframe::egui::{self, Align2, Button, Key, Modifiers, RichText, Stroke, Vec2, vec2};
 use pcb_cam_core::{
-    ContourSide, CopperGeometry, EngraveOperation, EngraveSide, FlipAxes, GerberLayer,
-    GerberRegion, LayerGeometry, LayerId, OperationId, OperationKind, Path as CamPath, Point,
-    Project, SourceFormat, SourceToolInfo, Task, Tool, ToolId, ToolKind, ToolLibrary, Unit,
+    ContourSide, CopperGeometry, CutoutContour, EngraveOperation, EngraveSide, FlipAxes,
+    GerberLayer, GerberRegion, LayerGeometry, LayerId, OperationId, OperationKind, Path as CamPath,
+    Point, Project, SourceFormat, SourceToolInfo, Task, Tool, ToolId, ToolKind, ToolLibrary, Unit,
     generate_all_gcode, generate_task_gcode, load_project, save_project,
 };
 use pcb_cam_engine::{Session, find_command};
@@ -161,7 +161,7 @@ pub(crate) enum TaskDraftKind {
         spindle: u32,
     },
     Cutout {
-        side: ContourSide,
+        contours: Vec<CutoutContour>,
         offset: f64,
         depth: f64,
         stepdown: f64,
@@ -249,19 +249,33 @@ impl TaskDraft {
                     spindle: mill.spindle_rpm,
                 }
             }
-            OperationKind::Cutout(cutout) => TaskDraftKind::Cutout {
-                side: cutout.side,
-                offset: cutout.offset_mm,
-                depth: cutout.depth_mm,
-                stepdown: cutout.stepdown_mm,
-                retract: cutout.retract_mm,
-                feed: cutout.feed_mm_min,
-                plunge: cutout.plunge_mm_min,
-                spindle: cutout.spindle_rpm,
-                bridge_length: cutout.bridge_length_mm,
-                bridge_start_depth: cutout.bridge_start_depth_mm,
-                bridge_count: cutout.bridge_count,
-            },
+            OperationKind::Cutout(cutout) => {
+                let mut contours = cutout.contours.clone();
+                if contours.is_empty()
+                    && let Some(layer) = project.layer(cutout.layer)
+                    && let LayerGeometry::Gerber(gerber) = layer.geometry()
+                {
+                    contours = (0..gerber.closed_contours().len())
+                        .map(|index| CutoutContour {
+                            index,
+                            side: ContourSide::Outside,
+                        })
+                        .collect();
+                }
+                TaskDraftKind::Cutout {
+                    contours,
+                    offset: cutout.offset_mm,
+                    depth: cutout.depth_mm,
+                    stepdown: cutout.stepdown_mm,
+                    retract: cutout.retract_mm,
+                    feed: cutout.feed_mm_min,
+                    plunge: cutout.plunge_mm_min,
+                    spindle: cutout.spindle_rpm,
+                    bridge_length: cutout.bridge_length_mm,
+                    bridge_start_depth: cutout.bridge_start_depth_mm,
+                    bridge_count: cutout.bridge_count,
+                }
+            }
             OperationKind::Engrave(engrave) => TaskDraftKind::Engrave {
                 side: engrave.side,
                 outline_offset: engrave.outline_offset_mm,
@@ -358,7 +372,7 @@ impl TaskDraft {
                 }),
             ),
             TaskDraftKind::Cutout {
-                side,
+                contours,
                 offset,
                 depth,
                 stepdown,
@@ -375,7 +389,10 @@ impl TaskDraft {
                     "id": self.id.value(),
                     "name": self.name,
                     "tool": self.tool.value(),
-                    "side": side.id(),
+                    "contours": contours
+                        .iter()
+                        .map(|contour| json!({"index": contour.index, "side": contour.side.id()}))
+                        .collect::<Vec<_>>(),
                     "offset": offset,
                     "depth": depth,
                     "stepdown": stepdown,

@@ -581,7 +581,12 @@ impl<'a> ProgramBuilder<'a> {
         }
 
         self.select_tool(&tool, cutout.retract_mm, cutout.spindle_rpm)?;
-        let _ = writeln!(self.text, "(Side: {})", cutout.side.label());
+        let contour_count = if cutout.contours.is_empty() {
+            "all".to_owned()
+        } else {
+            cutout.contours.len().to_string()
+        };
+        let _ = writeln!(self.text, "(Contours: {contour_count})");
         let pass_count = cutout.pass_count();
         let _ = writeln!(
             self.text,
@@ -595,15 +600,16 @@ impl<'a> ProgramBuilder<'a> {
                 cutout.bridge_count, cutout.bridge_length_mm, cutout.bridge_start_depth_mm
             );
         }
-        for pass in 1..=pass_count {
-            let depth = cutout.pass_depth(pass);
-            if pass_count > 1 {
-                let _ = writeln!(
-                    self.text,
-                    "(Depth pass {pass}/{pass_count} at Z-{depth:.3})"
-                );
-            }
-            for path in &paths {
+        for (contour_index, path) in paths.iter().enumerate() {
+            let _ = writeln!(self.text, "(Contour {}/{})", contour_index + 1, paths.len());
+            for pass in 1..=pass_count {
+                let depth = cutout.pass_depth(pass);
+                if pass_count > 1 {
+                    let _ = writeln!(
+                        self.text,
+                        "(Depth pass {pass}/{pass_count} at Z-{depth:.3})"
+                    );
+                }
                 self.cut_contour(path, cutout, depth, tool.diameter_mm() * 0.5);
             }
         }
@@ -1360,6 +1366,57 @@ mod tests {
         assert_eq!(program.text.matches("G01 Z-1.000").count(), 1);
         assert_eq!(program.text.matches("G01 Z-1.500").count(), 1);
         assert_eq!(program.text.matches("G01 Z-1.800").count(), 1);
+    }
+
+    #[test]
+    fn cutout_cuts_all_passes_of_one_contour_before_the_next() {
+        let mut project = Project::new("Two contours");
+        let layer = LayerGeometry::Gerber(GerberLayer {
+            primitives: vec![
+                Primitive::Stroke {
+                    path: Path::closed(vec![
+                        Point::new(0.0, 0.0),
+                        Point::new(10.0, 0.0),
+                        Point::new(10.0, 10.0),
+                        Point::new(0.0, 10.0),
+                    ]),
+                    aperture: Aperture::circle(0.1),
+                    polarity: crate::Polarity::Dark,
+                },
+                Primitive::Stroke {
+                    path: Path::closed(vec![
+                        Point::new(20.0, 0.0),
+                        Point::new(30.0, 0.0),
+                        Point::new(30.0, 10.0),
+                        Point::new(20.0, 10.0),
+                    ]),
+                    aperture: Aperture::circle(0.1),
+                    polarity: crate::Polarity::Dark,
+                },
+            ],
+            source_units: Some(crate::Unit::Millimeter),
+            warnings: Vec::new(),
+        });
+        let layer_id = project.add_layer("Edge", None, None, layer);
+        let library = ToolLibrary::new();
+        let tool = library.closest(ToolKind::EndMill, 1.0).unwrap();
+        let mut cutout = CutoutOperation::new(layer_id, tool);
+        cutout.offset_mm = 0.0;
+        cutout.depth_mm = 1.0;
+        cutout.stepdown_mm = 0.5;
+        let id = project.add_task("Cutout", OperationKind::Cutout(cutout));
+
+        let program = generate_task_gcode(&project, &library, project.task(id).unwrap()).unwrap();
+        let first = program.text.find("(Contour 1/2)").unwrap();
+        let second = program.text.find("(Contour 2/2)").unwrap();
+        let passes: Vec<usize> = program
+            .text
+            .match_indices("(Depth pass ")
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(passes.len(), 4);
+        assert!(first < passes[0] && passes[0] < passes[1]);
+        assert!(passes[1] < second && second < passes[2] && passes[2] < passes[3]);
     }
 
     #[test]

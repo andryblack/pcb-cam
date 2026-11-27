@@ -303,10 +303,18 @@ fn task_subtitle(app: &PbcCam, task: &pcb_cam_core::Task) -> String {
             } else {
                 String::new()
             };
+            let contours = if cutout.contours.is_empty() {
+                "all contours".to_owned()
+            } else {
+                format!(
+                    "{} contour{}",
+                    cutout.contours.len(),
+                    if cutout.contours.len() == 1 { "" } else { "s" }
+                )
+            };
             format!(
-                "Edge cut · {} · {} · {:.2} mm{depth}{bridges}{enabled}",
+                "Edge cut · {} · {contours} · {:.2} mm{depth}{bridges}{enabled}",
                 tool_label(app, task),
-                cutout.side.label(),
                 cutout.depth_mm
             )
         }

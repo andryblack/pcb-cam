@@ -4,9 +4,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use pcb_cam_core::{
-    ContourSide, CutoutOperation, DrillOperation, EngraveOperation, EngraveSide, FlipAxes,
-    HoleMillOperation, LayerGeometry, LayerId, Operation, OperationId, OperationKind, Point,
-    Project, SpotDrillOperation, ToolId, ToolKind, UNTITLED_PROJECT, generate_all_gcode,
+    ContourSide, CutoutContour, CutoutOperation, DrillOperation, EngraveOperation, EngraveSide,
+    FlipAxes, HoleMillOperation, LayerGeometry, LayerId, Operation, OperationId, OperationKind,
+    Point, Project, SpotDrillOperation, ToolId, ToolKind, UNTITLED_PROJECT, generate_all_gcode,
     generate_task_gcode, parse_excellon, parse_gerber,
 };
 use serde::Deserialize;
@@ -137,11 +137,18 @@ struct OperationUpdateSpotDrillParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct CutoutContourParam {
+    index: usize,
+    side: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct OperationAddCutoutParams {
     layer: u64,
     name: Option<String>,
     tool: Option<u64>,
     side: Option<String>,
+    contours: Option<Vec<CutoutContourParam>>,
     offset: Option<f64>,
     depth: Option<f64>,
     retract: Option<f64>,
@@ -160,6 +167,7 @@ struct OperationUpdateCutoutParams {
     name: Option<String>,
     tool: Option<u64>,
     side: Option<String>,
+    contours: Option<Vec<CutoutContourParam>>,
     offset: Option<f64>,
     depth: Option<f64>,
     retract: Option<f64>,
@@ -595,7 +603,7 @@ pub(crate) fn add_engrave_enabled(session: &Session) -> Result<(), String> {
 pub(crate) fn operation_add_cutout(session: &mut Session, params: &Value) -> Result<Value, String> {
     let params: OperationAddCutoutParams = parse_params(params)?;
     let layer_id = LayerId::new(params.layer);
-    let layer_name = {
+    let (layer_name, contour_count) = {
         let layer = session
             .project()
             .layer(layer_id)
@@ -606,7 +614,7 @@ pub(crate) fn operation_add_cutout(session: &mut Session, params: &Value) -> Res
         if !gerber.has_closed_contours() {
             return Err("the selected layer contains no closed contours".into());
         }
-        layer.name().to_owned()
+        (layer.name().to_owned(), gerber.closed_contours().len())
     };
 
     let tool = match params.tool {
@@ -633,9 +641,11 @@ pub(crate) fn operation_add_cutout(session: &mut Session, params: &Value) -> Res
     cutout.feed_mm_min = machining.mill_feed_mm_min;
     cutout.plunge_mm_min = machining.mill_plunge_mm_min;
     cutout.spindle_rpm = machining.spindle_rpm;
-    if let Some(side) = params.side.as_deref() {
-        cutout.side = parse_side(side)?;
-    }
+    let default_side = match params.side.as_deref() {
+        Some(side) => parse_side(side)?,
+        None => ContourSide::Outside,
+    };
+    cutout.contours = parse_cutout_contours(contour_count, params.contours, default_side)?;
     if let Some(offset) = params.offset {
         cutout.offset_mm = offset;
     }
@@ -675,6 +685,24 @@ pub(crate) fn operation_update_cutout(
     params: &Value,
 ) -> Result<Value, String> {
     let params: OperationUpdateCutoutParams = parse_params(params)?;
+    let task_id = OperationId::new(params.id);
+    let contour_count = {
+        let task = session
+            .project()
+            .task(task_id)
+            .ok_or_else(|| format!("task {} does not exist", params.id))?;
+        let OperationKind::Cutout(cutout) = task.kind() else {
+            return Err("task is not an edge cut".into());
+        };
+        let layer = session
+            .project()
+            .layer(cutout.layer)
+            .ok_or_else(|| "edge-cut layer no longer exists".to_owned())?;
+        let LayerGeometry::Gerber(gerber) = layer.geometry() else {
+            return Err("edge cut requires a Gerber layer".into());
+        };
+        gerber.closed_contours().len()
+    };
     let tool = params
         .tool
         .map(|id| require_tool(session, id))
@@ -687,7 +715,7 @@ pub(crate) fn operation_update_cutout(
     });
     let task = session
         .project_mut()
-        .task_mut(OperationId::new(params.id))
+        .task_mut(task_id)
         .ok_or_else(|| format!("task {} does not exist", params.id))?;
     if let Some(name) = params.name {
         task.set_name(name);
@@ -701,8 +729,20 @@ pub(crate) fn operation_update_cutout(
             cutout.offset_mm = radius;
         }
     }
-    if let Some(side) = params.side.as_deref() {
-        cutout.side = parse_side(side)?;
+    if let Some(contours) = params.contours {
+        cutout.contours =
+            parse_cutout_contours(contour_count, Some(contours), ContourSide::Outside)?;
+    } else if let Some(side) = params.side.as_deref() {
+        let side = parse_side(side)?;
+        if cutout.contours.is_empty() {
+            cutout.contours = (0..contour_count)
+                .map(|index| CutoutContour { index, side })
+                .collect();
+        } else {
+            for contour in &mut cutout.contours {
+                contour.side = side;
+            }
+        }
     }
     if let Some(offset) = params.offset {
         cutout.offset_mm = offset;
@@ -1559,6 +1599,51 @@ fn parse_engrave_side(side: &str) -> Result<EngraveSide, String> {
     }
 }
 
+fn parse_cutout_contours(
+    contour_count: usize,
+    contours: Option<Vec<CutoutContourParam>>,
+    default_side: ContourSide,
+) -> Result<Vec<CutoutContour>, String> {
+    if contour_count == 0 {
+        return Err("the selected layer contains no closed contours".into());
+    }
+    match contours {
+        Some(list) => {
+            if list.is_empty() {
+                return Err("select at least one closed contour".into());
+            }
+            let mut selected: Vec<CutoutContour> = Vec::with_capacity(list.len());
+            for entry in list {
+                if entry.index >= contour_count {
+                    return Err(format!(
+                        "contour {} does not exist; the layer has {contour_count} closed contours",
+                        entry.index
+                    ));
+                }
+                let side = parse_side(&entry.side)?;
+                if selected.iter().any(|item| item.index == entry.index) {
+                    return Err(format!(
+                        "contour {} is selected more than once",
+                        entry.index
+                    ));
+                }
+                selected.push(CutoutContour {
+                    index: entry.index,
+                    side,
+                });
+            }
+            selected.sort_by_key(|item| item.index);
+            Ok(selected)
+        }
+        None => Ok((0..contour_count)
+            .map(|index| CutoutContour {
+                index,
+                side: default_side,
+            })
+            .collect()),
+    }
+}
+
 fn parse_side(side: &str) -> Result<ContourSide, String> {
     match side {
         "outside" => Ok(ContourSide::Outside),
@@ -1681,6 +1766,24 @@ M02*
 ";
 
     const EDGE: &str = include_str!("../../../assets/samples/demo-Edge_Cuts.gbr");
+
+    const TWO_CONTOURS: &str = "\
+%FSLAX46Y46*%
+%MOMM*%
+%ADD10C,0.100000*%
+D10*
+X0Y0D02*
+X10000000Y0D01*
+X10000000Y10000000D01*
+X0Y10000000D01*
+X0Y0D01*
+X3000000Y3000000D02*
+X7000000Y3000000D01*
+X7000000Y7000000D01*
+X3000000Y7000000D01*
+X3000000Y3000000D01*
+M02*
+";
 
     const EXCELLON: &str = "\
 M48
@@ -2202,6 +2305,59 @@ M30
             panic!("expected edge cut");
         };
         assert!((cutout.offset_mm - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn edge_cut_selects_contours_and_sides() {
+        let mut session = Session::new();
+        let import = session
+            .execute(
+                "file.import_gerber",
+                &json!({"content": TWO_CONTOURS, "name": "Edge"}),
+            )
+            .unwrap();
+        let layer = import["layer"].as_u64().unwrap();
+        let created = session
+            .execute("task.add_cutout", &json!({"layer": layer}))
+            .unwrap();
+        let task_id = OperationId::new(created["id"].as_u64().unwrap());
+        let OperationKind::Cutout(cutout) = session.project().task(task_id).unwrap().kind() else {
+            panic!("expected edge cut");
+        };
+        assert_eq!(cutout.contours.len(), 2);
+        assert!(
+            cutout
+                .contours
+                .iter()
+                .all(|contour| contour.side == ContourSide::Outside)
+        );
+
+        session
+            .execute(
+                "task.update_cutout",
+                &json!({
+                    "id": created["id"],
+                    "contours": [
+                        {"index": 0, "side": "outside"},
+                        {"index": 1, "side": "inside"},
+                    ],
+                }),
+            )
+            .unwrap();
+        let OperationKind::Cutout(cutout) = session.project().task(task_id).unwrap().kind() else {
+            panic!("expected edge cut");
+        };
+        assert_eq!(cutout.contours.len(), 2);
+        assert_eq!(cutout.contours[0].side, ContourSide::Outside);
+        assert_eq!(cutout.contours[1].side, ContourSide::Inside);
+
+        let error = session
+            .execute(
+                "task.update_cutout",
+                &json!({"id": created["id"], "contours": [{"index": 5, "side": "outside"}]}),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("does not exist"), "{error}");
     }
 
     #[test]

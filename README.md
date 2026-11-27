@@ -75,12 +75,18 @@ diameters.
 | Drilling | Excellon holes | drill bit | vertical plunge only |
 | Hole milling | Excellon holes and slots | end mill or V-bit | helical interpolation for holes larger than the tool; routed slots |
 | Spot drilling | Excellon hole centres | cone/spot drill | ignores hole diameters and slots |
-| Edge cut | Gerber closed contours | end mill or V-bit | outside/inside/on-line offset, depth passes, optional bridges |
+| Edge cut | selected Gerber closed contours | end mill or V-bit | per-contour outside/inside/on-line offset, depth passes, optional bridges |
 | Clearance | Gerber paths (copper, silkscreen, etc.) | V-bit or end mill | isolation routing with a clearing width |
 
 - **Depth passes** — `Stepdown` is the maximum depth increase per pass; the
   pass count is `ceil(depth / stepdown)` and the last pass is clamped to the
   total depth.
+- **Edge-cut contours** — a task lists the closed contours it cuts. Each
+  selected contour has its own `Outside`, `Inside` or `On line` side; the
+  offset, depth and bridges are shared by the whole task. New tasks select
+  every closed contour of the source layer on the `Outside` side. Use
+  `Inside` for holes to keep their size. Each contour completes all of its
+  depth passes before the next selected contour is cut.
 - **Bridges** — tabs keep the part in the stock. `Count` is the number of
   bridges per closed contour (`0` disables them). `Length` defaults to `2 mm`
   and is measured at the narrowest point of the finished tab: the cutter is

@@ -2,8 +2,8 @@
 
 use eframe::egui::{self, Align, Button, Frame, Layout, Margin, RichText, Stroke, Ui, vec2};
 use pcb_cam_core::{
-    ContourSide, EngraveSide, LayerGeometry, LayerId, OperationId, OperationKind, SourceToolInfo,
-    Tool, ToolId, Unit, clearance_pass_count, depth_pass_count,
+    ContourSide, CutoutContour, EngraveSide, LayerGeometry, LayerId, OperationId, OperationKind,
+    SourceToolInfo, Tool, ToolId, Unit, clearance_pass_count, depth_pass_count,
 };
 
 use crate::app::{PbcCam, Selection, TaskDraftKind};
@@ -485,6 +485,17 @@ fn task_details(
     } else {
         Vec::new()
     };
+    let cutout_contours = if matches!(task.kind(), OperationKind::Cutout(_)) {
+        app.project()
+            .layer(task.source_layer())
+            .and_then(|layer| match layer.geometry() {
+                LayerGeometry::Gerber(gerber) => Some(gerber.closed_contours()),
+                LayerGeometry::Excellon(_) => None,
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let Some(draft) = app.task_draft.as_mut() else {
         return;
     };
@@ -661,7 +672,7 @@ fn task_details(
                 commit |= inline_u32(ui, "Spindle", spindle, 0..=60_000, " rpm", 100.0);
             }
             TaskDraftKind::Cutout {
-                side,
+                contours,
                 offset,
                 depth,
                 stepdown,
@@ -677,25 +688,81 @@ fn task_details(
                     *offset = tool_diameter * 0.5;
                 }
                 ui.add_space(8.0);
+                widgets::section_label(ui, "Contours");
+                ui.add_space(3.0);
+                if cutout_contours.is_empty() {
+                    ui.label(
+                        RichText::new("The source layer has no closed contours.")
+                            .size(10.0)
+                            .color(theme::copper()),
+                    );
+                } else {
+                    for (index, contour) in cutout_contours.iter().enumerate() {
+                        let position = contours.iter().position(|entry| entry.index == index);
+                        let mut selected = position.is_some();
+                        ui.horizontal(|ui| {
+                            if ui
+                                .checkbox(&mut selected, cutout_contour_label(index, contour))
+                                .changed()
+                            {
+                                match (selected, position) {
+                                    (true, None) => {
+                                        contours.push(CutoutContour {
+                                            index,
+                                            side: ContourSide::Outside,
+                                        });
+                                        contours.sort_by_key(|entry| entry.index);
+                                    }
+                                    (false, Some(position)) => {
+                                        contours.remove(position);
+                                    }
+                                    _ => {}
+                                }
+                                commit = true;
+                            }
+                            if selected {
+                                let Some(entry) =
+                                    contours.iter_mut().find(|entry| entry.index == index)
+                                else {
+                                    return;
+                                };
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    egui::ComboBox::from_id_salt(("cutout_side", index))
+                                        .selected_text(entry.side.label())
+                                        .show_ui(ui, |ui| {
+                                            for candidate in [
+                                                ContourSide::Outside,
+                                                ContourSide::Inside,
+                                                ContourSide::OnLine,
+                                            ] {
+                                                if ui
+                                                    .selectable_label(
+                                                        entry.side == candidate,
+                                                        candidate.label(),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    entry.side = candidate;
+                                                    commit = true;
+                                                }
+                                            }
+                                        });
+                                });
+                            }
+                        });
+                    }
+                    ui.label(
+                        RichText::new(
+                            "Selected contours are cut by this task. Use Inside for holes to keep the hole size; the offset is shared by all selected contours.",
+                        )
+                        .size(9.0)
+                        .color(theme::text_faint()),
+                    );
+                }
+
+                ui.add_space(8.0);
                 widgets::section_label(ui, "Cutter");
                 ui.add_space(3.0);
-                let mut changed_side = false;
-                ui.horizontal(|ui| {
-                    for candidate in [
-                        ContourSide::Outside,
-                        ContourSide::Inside,
-                        ContourSide::OnLine,
-                    ] {
-                        if ui
-                            .add(Button::selectable(*side == candidate, candidate.label()))
-                            .clicked()
-                        {
-                            *side = candidate;
-                            changed_side = true;
-                        }
-                    }
-                });
-                commit |= changed_side;
                 commit |= inline_offset(
                     ui,
                     "Offset",
@@ -1130,6 +1197,20 @@ fn inline_u32(
         });
     });
     commit
+}
+
+fn cutout_contour_label(index: usize, contour: &pcb_cam_core::Path) -> String {
+    contour.bounds().map_or_else(
+        || format!("Contour {}", index + 1),
+        |bounds| {
+            format!(
+                "Contour {} · {:.1} × {:.1} mm",
+                index + 1,
+                bounds.max.x - bounds.min.x,
+                bounds.max.y - bounds.min.y
+            )
+        },
+    )
 }
 
 fn filtered_counts(
