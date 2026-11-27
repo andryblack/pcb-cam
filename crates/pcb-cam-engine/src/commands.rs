@@ -2361,6 +2361,35 @@ M30
     }
 
     #[test]
+    fn edge_cut_depth_override_reaches_gcode() {
+        let mut session = Session::new();
+        let import = session
+            .execute(
+                "file.import_gerber",
+                &json!({"content": EDGE, "name": "Edge"}),
+            )
+            .unwrap();
+        let layer = import["layer"].as_u64().unwrap();
+        let created = session
+            .execute("task.add_cutout", &json!({"layer": layer}))
+            .unwrap();
+        session
+            .execute(
+                "task.update_cutout",
+                &json!({"id": created["id"], "depth": 2.0, "stepdown": 0.5}),
+            )
+            .unwrap();
+        let task_id = OperationId::new(created["id"].as_u64().unwrap());
+        let task = session.project().task(task_id).unwrap();
+        let OperationKind::Cutout(cutout) = task.kind() else {
+            panic!("expected edge cut");
+        };
+        assert!((cutout.depth_mm - 2.0).abs() < 1e-9);
+        let program = generate_task_gcode(session.project(), session.tool_library(), task).unwrap();
+        assert!(program.text.contains("G01 Z-2.000"), "{}", program.text);
+    }
+
+    #[test]
     fn edge_cut_stepdown_and_bridge_parameters_are_updated() {
         let mut session = Session::new();
         let import = session

@@ -1126,11 +1126,10 @@ fn inline_offset(
                     .max_decimals(3)
                     .suffix(suffix),
             );
-            commit = response.drag_stopped()
-                || (response.changed() && response.lost_focus())
-                || (response.changed()
-                    && response.hovered()
-                    && ui.input(|input| input.pointer.any_released()));
+            // Commit while typing as well as on drag release. Waiting for the
+            // field to lose focus loses the edit when another action (preview,
+            // export, save) is handled before the inspector in the same frame.
+            commit = response.drag_stopped() || (response.changed() && !response.dragged());
             if reset.clicked() {
                 *value = default;
                 commit = true;
@@ -1158,11 +1157,9 @@ fn inline_f64(
                     .max_decimals(3)
                     .suffix(suffix),
             );
-            commit = response.drag_stopped()
-                || (response.changed() && response.lost_focus())
-                || (response.changed()
-                    && response.hovered()
-                    && ui.input(|input| input.pointer.any_released()));
+            // See `inline_offset`: decimal edits must reach the model before a
+            // following action can generate G-code or save the project.
+            commit = response.drag_stopped() || (response.changed() && !response.dragged());
         });
     });
     commit
