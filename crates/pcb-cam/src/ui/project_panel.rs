@@ -149,7 +149,7 @@ fn import_buttons(ui: &mut Ui, app: &mut PbcCam) {
         )
         .clicked()
     {
-        app.import_dialog();
+        app.import_dialog(ui.ctx());
     }
 }
 

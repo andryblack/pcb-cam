@@ -69,14 +69,14 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         .clicked()
                     {
                         ui.close();
-                        app.save_project();
+                        app.save_project(ui.ctx());
                     }
                     if ui
                         .add(Button::new("Save Project As…").shortcut_text(app::SHORTCUT_SAVE_AS))
                         .clicked()
                     {
                         ui.close();
-                        app.save_project_as_dialog();
+                        app.save_project_as_dialog(ui.ctx());
                     }
 
                     ui.separator();
@@ -86,7 +86,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                         .clicked()
                     {
                         ui.close();
-                        app.import_dialog();
+                        app.import_dialog(ui.ctx());
                     }
                     if ui.button("Load Demo Project").clicked() {
                         app.request_load_demo(ui.ctx());
@@ -324,7 +324,7 @@ fn preview_menus(ui: &mut egui::Ui, app: &mut PbcCam) {
     ui.menu_button("File", |ui| {
         let export = ui.add(Button::new("Export G-code…").shortcut_text("Cmd/Ctrl+E"));
         if export.clicked() {
-            app.export_preview_gcode();
+            app.export_preview_gcode(ui.ctx());
             ui.close();
         }
         if ui

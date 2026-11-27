@@ -112,7 +112,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
         Some(InspectorAction::AddSpotDrill) => app.add_spot_drill_task(),
         Some(InspectorAction::AddCutout) => app.add_cutout_task(),
         Some(InspectorAction::AddEngrave) => app.add_engrave_task(),
-        Some(InspectorAction::Import) => app.import_dialog(),
+        Some(InspectorAction::Import) => app.import_dialog(ui.ctx()),
         Some(InspectorAction::PickOrigin) => {
             app.origin_pick = true;
             app.set_status("Click the canvas to place the G-code 0-point");

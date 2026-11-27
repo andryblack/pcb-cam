@@ -2,9 +2,12 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
+use std::future::Future;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::task::{Context as TaskContext, Poll, Wake, Waker};
 use std::time::Duration;
 
 use eframe::egui::{self, Align2, Button, Key, Modifiers, RichText, Stroke, Vec2, vec2};
@@ -585,6 +588,46 @@ pub(crate) enum PendingAction {
     LoadDemo,
 }
 
+/// What to do with the file returned by the pending native dialog.
+#[derive(Debug, Clone, Copy)]
+enum DialogKind {
+    OpenProject,
+    Import,
+    SaveProject {
+        /// Continue with `pending_action` once the project is written.
+        resume: bool,
+    },
+    Export(PreviewMode),
+}
+
+type DialogFuture = Pin<Box<dyn Future<Output = Option<rfd::FileHandle>>>>;
+
+struct DialogState {
+    kind: DialogKind,
+    future: DialogFuture,
+}
+
+impl std::fmt::Debug for DialogState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DialogState")
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Wakes egui when an asynchronous native dialog reports a result.
+struct RepaintWaker(egui::Context);
+
+impl Wake for RepaintWaker {
+    fn wake(self: Arc<Self>) {
+        self.0.request_repaint();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.request_repaint();
+    }
+}
+
 /// Top-level application state.
 #[derive(Debug)]
 pub struct PbcCam {
@@ -618,6 +661,8 @@ pub struct PbcCam {
     pub(crate) flip_axes_preview: Option<FlipAxes>,
     pub(crate) flip_axes_dialog: Option<FlipAxes>,
     project_path: Option<PathBuf>,
+    /// Native file dialog that is currently open (or about to open).
+    dialog: Option<DialogState>,
     pub(crate) pending_action: Option<PendingAction>,
     allow_close: bool,
     pub(crate) recent_projects: Vec<PathBuf>,
@@ -699,6 +744,7 @@ impl PbcCam {
             flip_axes_preview: None,
             flip_axes_dialog: None,
             project_path: None,
+            dialog: None,
             pending_action: None,
             allow_close: false,
             recent_projects,
@@ -990,10 +1036,10 @@ impl PbcCam {
     }
 
     pub(crate) fn open_project_dialog(&mut self, ctx: &egui::Context) {
-        let Some(path) = file_dialog("Open Project", "PCB-CAM project", &["pcbcam"]) else {
-            return;
-        };
-        self.request_open_project(path, ctx);
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_title("Open Project")
+            .add_filter("PCB-CAM project", &["pcbcam"]);
+        self.begin_dialog(DialogKind::OpenProject, || dialog.pick_file(), ctx);
     }
 
     pub(crate) fn open_project(&mut self, path: PathBuf) -> bool {
@@ -1045,15 +1091,36 @@ impl PbcCam {
         true
     }
 
-    pub(crate) fn save_project(&mut self) -> bool {
-        if let Some(path) = self.project_path.clone() {
-            self.save_project_to(path)
-        } else {
-            self.save_project_as_dialog()
+    pub(crate) fn save_project(&mut self, ctx: &egui::Context) {
+        self.save_project_inner(ctx, false);
+    }
+
+    /// Save from the unsaved-changes dialog, then continue its pending action.
+    fn save_project_for_pending_action(&mut self, ctx: &egui::Context) {
+        self.save_project_inner(ctx, true);
+    }
+
+    fn save_project_inner(&mut self, ctx: &egui::Context, resume: bool) {
+        if self.dialog.is_some() {
+            return;
+        }
+        let Some(path) = self.project_path.clone() else {
+            self.start_save_dialog(ctx, resume);
+            return;
+        };
+        if self.save_project_to(path)
+            && resume
+            && let Some(action) = self.pending_action.take()
+        {
+            self.apply_action(action, ctx);
         }
     }
 
-    pub(crate) fn save_project_as_dialog(&mut self) -> bool {
+    pub(crate) fn save_project_as_dialog(&mut self, ctx: &egui::Context) {
+        self.start_save_dialog(ctx, false);
+    }
+
+    fn start_save_dialog(&mut self, ctx: &egui::Context, resume: bool) {
         let base: String = self
             .project()
             .name()
@@ -1068,20 +1135,84 @@ impl PbcCam {
             .collect();
         let base = base.trim_matches('_');
         let base = if base.is_empty() { "board" } else { base };
-        let Some(path) = rfd::FileDialog::new()
+        let dialog = rfd::AsyncFileDialog::new()
             .set_title("Save Project")
             .add_filter("PCB-CAM project", &["pcbcam"])
-            .set_file_name(format!("{base}.pcbcam"))
-            .save_file()
-        else {
+            .set_file_name(format!("{base}.pcbcam"));
+        self.begin_dialog(
+            DialogKind::SaveProject { resume },
+            || dialog.save_file(),
+            ctx,
+        );
+    }
+
+    /// Start a native dialog and remember what to do with its result.
+    ///
+    /// The dialog is opened as a platform sheet/future instead of a blocking
+    /// run loop. That keeps winit's event handler out of the picture while the
+    /// panel is up; on macOS a blocking panel pumps its own event loop and can
+    /// dispatch `ScaleFactorChanged` re-entrantly, which winit aborts on.
+    fn begin_dialog<F>(
+        &mut self,
+        kind: DialogKind,
+        build: impl FnOnce() -> F,
+        ctx: &egui::Context,
+    ) -> bool
+    where
+        F: Future<Output = Option<rfd::FileHandle>> + 'static,
+    {
+        if self.dialog.is_some() {
             return false;
+        }
+        self.dialog = Some(DialogState {
+            kind,
+            future: Box::pin(build()),
+        });
+        ctx.request_repaint();
+        true
+    }
+
+    /// Poll the pending dialog and route its result.
+    fn poll_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.dialog.take() else {
+            return;
         };
-        let path = if path.extension().is_none() {
-            path.with_extension("pcbcam")
-        } else {
-            path
+        let waker = Waker::from(Arc::new(RepaintWaker(ctx.clone())));
+        let mut task = TaskContext::from_waker(&waker);
+        match dialog.future.as_mut().poll(&mut task) {
+            Poll::Ready(file) => {
+                let path = file.map(|handle| handle.path().to_path_buf());
+                self.finish_dialog(dialog.kind, path, ctx);
+            }
+            Poll::Pending => {
+                // The future keeps our waker and repaints when the panel closes.
+                self.dialog = Some(dialog);
+            }
+        }
+    }
+
+    fn finish_dialog(&mut self, kind: DialogKind, path: Option<PathBuf>, ctx: &egui::Context) {
+        let Some(path) = path else {
+            return;
         };
-        self.save_project_to(path)
+        match kind {
+            DialogKind::OpenProject => self.request_open_project(path, ctx),
+            DialogKind::Import => self.import_path(path),
+            DialogKind::SaveProject { resume } => {
+                let path = if path.extension().is_none() {
+                    path.with_extension("pcbcam")
+                } else {
+                    path
+                };
+                if self.save_project_to(path)
+                    && resume
+                    && let Some(action) = self.pending_action.take()
+                {
+                    self.apply_action(action, ctx);
+                }
+            }
+            DialogKind::Export(mode) => self.finish_gcode_export(mode, path),
+        }
     }
 
     pub(crate) fn save_project_to(&mut self, path: PathBuf) -> bool {
@@ -1103,8 +1234,8 @@ impl PbcCam {
         true
     }
 
-    pub(crate) fn import_dialog(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
+    pub(crate) fn import_dialog(&mut self, ctx: &egui::Context) {
+        let dialog = rfd::AsyncFileDialog::new()
             .set_title("Import fabrication files")
             .add_filter(
                 "PCB fabrication files",
@@ -1113,12 +1244,8 @@ impl PbcCam {
                     "gm1", "gtp", "gbp", "gba", "gta", "drl", "xln", "exc", "nc", "txt",
                 ],
             )
-            .add_filter("All files", &["*"])
-            .pick_file()
-        else {
-            return;
-        };
-        self.import_path(path);
+            .add_filter("All files", &["*"]);
+        self.begin_dialog(DialogKind::Import, || dialog.pick_file(), ctx);
     }
 
     /// Import every Gerber/Excellon file contained in a ZIP archive.
@@ -1660,7 +1787,7 @@ impl PbcCam {
     }
 
     /// Export the program currently shown in the preview.
-    pub(crate) fn export_preview_gcode(&mut self) {
+    pub(crate) fn export_preview_gcode(&mut self, ctx: &egui::Context) {
         let Some(mode) = self.preview.as_ref().map(|preview| preview.mode) else {
             return;
         };
@@ -1679,9 +1806,14 @@ impl PbcCam {
             ),
             PreviewMode::All => "-all".to_owned(),
         };
-        let Some(path) = self.choose_gcode_path(&suffix) else {
-            return;
-        };
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_title("Export G-code")
+            .add_filter("G-code", &["nc", "gcode", "tap"])
+            .set_file_name(self.gcode_file_name(&suffix));
+        self.begin_dialog(DialogKind::Export(mode), || dialog.save_file(), ctx);
+    }
+
+    fn finish_gcode_export(&mut self, mode: PreviewMode, path: PathBuf) {
         let value = match mode {
             PreviewMode::Task(id) => self.run_command(
                 "file.export_task_gcode",
@@ -1715,7 +1847,7 @@ impl PbcCam {
         }
     }
 
-    fn choose_gcode_path(&self, suffix: &str) -> Option<PathBuf> {
+    fn gcode_file_name(&self, suffix: &str) -> String {
         let base: String = self
             .project()
             .name()
@@ -1730,12 +1862,7 @@ impl PbcCam {
             .collect();
         let base = base.trim_matches('_');
         let base = if base.is_empty() { "board" } else { base };
-        let default_name = format!("{base}{suffix}.nc");
-        rfd::FileDialog::new()
-            .set_title("Export G-code")
-            .add_filter("G-code", &["nc", "gcode", "tap"])
-            .set_file_name(default_name)
-            .save_file()
+        format!("{base}{suffix}.nc")
     }
 
     fn report_export(&mut self, value: &Value, kind: &str) {
@@ -1928,9 +2055,7 @@ impl PbcCam {
             });
 
         if save {
-            if self.save_project() {
-                self.apply_action(action, ctx);
-            }
+            self.save_project_for_pending_action(ctx);
         } else if discard {
             self.apply_action(action, ctx);
         } else if cancel || !open {
@@ -2160,13 +2285,13 @@ impl PbcCam {
         }
 
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::O)) {
-            self.import_dialog();
+            self.import_dialog(ctx);
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::S)) {
-            self.save_project_as_dialog();
+            self.save_project_as_dialog(ctx);
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
-            self.save_project();
+            self.save_project(ctx);
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Comma)) {
             self.settings_open = true;
@@ -2254,7 +2379,7 @@ impl PbcCam {
             }
         }
         if export {
-            self.export_preview_gcode();
+            self.export_preview_gcode(ctx);
         }
         if regenerate {
             self.regenerate_preview();
@@ -2766,6 +2891,7 @@ fn spindle_row(ui: &mut egui::Ui, spindle: &mut u32) {
 impl eframe::App for PbcCam {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         theme::sync(ui.ctx(), &self.appearance);
+        self.poll_dialog(ui.ctx());
         self.handle_close_request(ui.ctx());
         self.handle_shortcuts(ui.ctx());
         self.sync_window_title(ui.ctx());
@@ -2960,13 +3086,6 @@ fn metric_row(
             );
         });
     });
-}
-
-fn file_dialog(title: &str, filter: &str, extensions: &[&str]) -> Option<PathBuf> {
-    rfd::FileDialog::new()
-        .set_title(title)
-        .add_filter(filter, extensions)
-        .pick_file()
 }
 
 #[cfg(test)]

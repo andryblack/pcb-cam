@@ -68,7 +68,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
                     .add(Button::new(RichText::new("Import").size(11.5)))
                     .on_hover_text("Import Gerber, Excellon or a ZIP archive");
                 if import.clicked() {
-                    app.import_dialog();
+                    app.import_dialog(ui.ctx());
                 }
 
                 ui.menu_button(RichText::new("+ Task").size(11.5), |ui| {

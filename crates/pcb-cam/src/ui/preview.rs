@@ -33,7 +33,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut PbcCam) {
     });
     match action {
         Some(PreviewAction::Close) => app.close_preview(),
-        Some(PreviewAction::Export) => app.export_preview_gcode(),
+        Some(PreviewAction::Export) => app.export_preview_gcode(ui.ctx()),
         Some(PreviewAction::Regenerate) => app.regenerate_preview(),
         None => {}
     }
