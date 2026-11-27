@@ -6508,11 +6508,11 @@ SOFTWARE.
 
 Used by:
 
-- pcb-cam 0.1.2
+- pcb-cam 0.1.3
   Copyright: andryblack <blackicebox@gmail.com>
-- pcb-cam-core 0.1.2
+- pcb-cam-core 0.1.3
   Copyright: andryblack <blackicebox@gmail.com>
-- pcb-cam-engine 0.1.2
+- pcb-cam-engine 0.1.3
   Copyright: andryblack <blackicebox@gmail.com>
 - accesskit 0.25.2 — https://github.com/AccessKit/accesskit
   Copyright: The AccessKit contributors
