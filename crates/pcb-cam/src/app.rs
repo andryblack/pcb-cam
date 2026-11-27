@@ -674,6 +674,12 @@ pub struct PbcCam {
     pub(crate) flip_axes_preview: Option<FlipAxes>,
     pub(crate) flip_axes_dialog: Option<FlipAxes>,
     project_path: Option<PathBuf>,
+    /// Last directory used by the import dialog.
+    last_import_dir: Option<PathBuf>,
+    /// Last directory used by the project open/save dialogs.
+    last_project_dir: Option<PathBuf>,
+    /// Last directory used by the G-code export dialog.
+    last_export_dir: Option<PathBuf>,
     /// Native file dialog that is currently open (or about to open).
     dialog: Option<DialogState>,
     pub(crate) pending_action: Option<PendingAction>,
@@ -725,6 +731,15 @@ impl PbcCam {
             .into_iter()
             .filter(|path| path.is_file())
             .collect();
+        let stored_dir = |key: &str| {
+            cc.storage
+                .and_then(|storage| storage.get_string(key))
+                .map(PathBuf::from)
+                .filter(|path| path.is_dir())
+        };
+        let last_import_dir = stored_dir("last_import_dir");
+        let last_project_dir = stored_dir("last_project_dir");
+        let last_export_dir = stored_dir("last_export_dir");
 
         Self {
             session,
@@ -757,6 +772,9 @@ impl PbcCam {
             flip_axes_preview: None,
             flip_axes_dialog: None,
             project_path: None,
+            last_import_dir,
+            last_project_dir,
+            last_export_dir,
             dialog: None,
             pending_action: None,
             allow_close: false,
@@ -1049,9 +1067,12 @@ impl PbcCam {
     }
 
     pub(crate) fn open_project_dialog(&mut self, ctx: &egui::Context) {
-        let dialog = rfd::AsyncFileDialog::new()
+        let mut dialog = rfd::AsyncFileDialog::new()
             .set_title("Open Project")
             .add_filter("PCB-CAM project", &["pcbcam"]);
+        if let Some(directory) = self.project_directory() {
+            dialog = dialog.set_directory(directory);
+        }
         self.begin_dialog(DialogKind::OpenProject, || dialog.pick_file(), ctx);
     }
 
@@ -1090,6 +1111,7 @@ impl PbcCam {
         self.session.set_tool_library(library);
         self.session.load_project(loaded.project);
         self.project_path = Some(path.clone());
+        self.last_project_dir = parent_directory(&path);
         self.add_recent_project(&path);
         self.selection = None;
         self.task_draft = None;
@@ -1148,15 +1170,25 @@ impl PbcCam {
             .collect();
         let base = base.trim_matches('_');
         let base = if base.is_empty() { "board" } else { base };
-        let dialog = rfd::AsyncFileDialog::new()
+        let mut dialog = rfd::AsyncFileDialog::new()
             .set_title("Save Project")
             .add_filter("PCB-CAM project", &["pcbcam"])
             .set_file_name(format!("{base}.pcbcam"));
+        if let Some(directory) = self.project_directory() {
+            dialog = dialog.set_directory(directory);
+        }
         self.begin_dialog(
             DialogKind::SaveProject { resume },
             || dialog.save_file(),
             ctx,
         );
+    }
+
+    /// Directory to start project open/save dialogs in.
+    fn project_directory(&self) -> Option<PathBuf> {
+        self.last_project_dir
+            .clone()
+            .or_else(|| self.project_path.as_deref().and_then(parent_directory))
     }
 
     /// Start a native dialog and remember what to do with its result.
@@ -1241,6 +1273,7 @@ impl PbcCam {
             return false;
         }
         self.project_path = Some(path.clone());
+        self.last_project_dir = parent_directory(&path);
         self.add_recent_project(&path);
         self.session.mark_clean();
         self.set_status(format!("Saved {}", path.display()));
@@ -1248,7 +1281,7 @@ impl PbcCam {
     }
 
     pub(crate) fn import_dialog(&mut self, ctx: &egui::Context) {
-        let dialog = rfd::AsyncFileDialog::new()
+        let mut dialog = rfd::AsyncFileDialog::new()
             .set_title("Import fabrication files")
             .add_filter(
                 "PCB fabrication files",
@@ -1258,6 +1291,9 @@ impl PbcCam {
                 ],
             )
             .add_filter("All files", &["*"]);
+        if let Some(directory) = self.last_import_dir.clone() {
+            dialog = dialog.set_directory(directory);
+        }
         self.begin_dialog(DialogKind::Import, || dialog.pick_file(), ctx);
     }
 
@@ -1387,6 +1423,7 @@ impl PbcCam {
     }
 
     pub(crate) fn import_path(&mut self, path: PathBuf) {
+        self.last_import_dir = parent_directory(&path);
         if is_zip_file(&path) {
             self.import_zip(path);
             return;
@@ -1819,14 +1856,18 @@ impl PbcCam {
             ),
             PreviewMode::All => "-all".to_owned(),
         };
-        let dialog = rfd::AsyncFileDialog::new()
+        let mut dialog = rfd::AsyncFileDialog::new()
             .set_title("Export G-code")
             .add_filter("G-code", &["nc", "gcode", "tap"])
             .set_file_name(self.gcode_file_name(&suffix));
+        if let Some(directory) = self.last_export_dir.clone() {
+            dialog = dialog.set_directory(directory);
+        }
         self.begin_dialog(DialogKind::Export(mode), || dialog.save_file(), ctx);
     }
 
     fn finish_gcode_export(&mut self, mode: PreviewMode, path: PathBuf) {
+        self.last_export_dir = parent_directory(&path);
         let value = match mode {
             PreviewMode::Task(id) => self.run_command(
                 "file.export_task_gcode",
@@ -2970,7 +3011,22 @@ impl eframe::App for PbcCam {
         if let Ok(json) = serde_json::to_string(&self.appearance) {
             storage.set_string("appearance_settings", json);
         }
+        for (key, directory) in [
+            ("last_import_dir", &self.last_import_dir),
+            ("last_project_dir", &self.last_project_dir),
+            ("last_export_dir", &self.last_export_dir),
+        ] {
+            if let Some(directory) = directory {
+                storage.set_string(key, directory.to_string_lossy().into_owned());
+            }
+        }
     }
+}
+
+fn parent_directory(path: &Path) -> Option<PathBuf> {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
 }
 
 fn sniff_source_format(text: &str) -> Option<SourceFormat> {
